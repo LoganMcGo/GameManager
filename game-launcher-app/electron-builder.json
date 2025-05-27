@@ -1,0 +1,24 @@
+{
+  "appId": "com.gamelauncher.app",
+  "productName": "Game Launcher",
+  "directories": {
+    "output": "release/"
+  },
+  "files": [
+    "dist/**/*",
+    "main.js",
+    "preload.js",
+    "package.json"
+  ],
+  "win": {
+    "target": [
+      "nsis"
+    ],
+    "icon": "src/assets/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true
+  }
+}
