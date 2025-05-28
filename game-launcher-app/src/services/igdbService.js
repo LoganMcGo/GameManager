@@ -1,21 +1,12 @@
-const axios = require('axios');
 const Store = require('electron-store').default || require('electron-store');
 const { ipcMain } = require('electron');
+const { makeProxyRequest } = require('./jwtService');
 
-// Base URL for IGDB API
-const BASE_URL = 'https://api.igdb.com/v4';
+// Cloud function URLs
+const IGDB_PROXY_URL = 'https://us-central1-gamemanagerproxy.cloudfunctions.net/igdb-proxy';
 
 // Declare store variables
-let store;
 let cacheStore;
-
-// Rate limiting configuration
-const RATE_LIMIT = {
-  maxRequestsPerSecond: 4, // IGDB allows 4 requests per second
-  requestQueue: [],
-  isProcessing: false,
-  lastRequestTime: 0
-};
 
 // Cache configuration (in milliseconds)
 const CACHE_DURATION = {
@@ -23,14 +14,6 @@ const CACHE_DURATION = {
   popularGames: 10 * 60 * 1000,  // 10 minutes (reduced for faster updates)
   gameDetails: 2 * 60 * 60 * 1000, // 2 hours
   gamesByGenre: 1 * 60 * 1000    // 1 minute (very short for testing new filters)
-};
-
-// Retry configuration
-const RETRY_CONFIG = {
-  maxRetries: 3,
-  baseDelay: 1000, // 1 second
-  maxDelay: 30000, // 30 seconds
-  backoffMultiplier: 2
 };
 
 // Helper function to format IGDB image URLs
@@ -75,80 +58,41 @@ const UNIVERSAL_SUB_CATEGORIES = [
 // PC Platform IDs in IGDB (Windows, Mac, Linux)
 const PC_PLATFORM_IDS = [6, 14, 3]; // 6 = PC (Microsoft Windows), 14 = Mac, 3 = Linux
 
-// Sleep function for delays
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+// Initialize the service
+function initIgdbService() {
+  try {
+    // Create a separate store for caching
+    cacheStore = new Store({
+      name: 'igdb-cache',
+      encryptionKey: 'your-cache-encryption-key',
+    });
 
-// Generate random jitter to avoid thundering herd
-function getJitter(baseDelay) {
-  return baseDelay + Math.random() * 1000; // Add up to 1 second of jitter
-}
-
-// Rate limiting queue processor
-async function processRequestQueue() {
-  if (RATE_LIMIT.isProcessing || RATE_LIMIT.requestQueue.length === 0) {
-    return;
+    // Register IPC handlers for renderer process to communicate with this service
+    ipcMain.handle('igdb:get-popular-new-games', (event, limit, offset) => handleGetPopularNewGames(limit, offset));
+    ipcMain.handle('igdb:get-games-by-genre', (event, genre, limit, offset, subCategory) => handleGetGamesByGenre(genre, limit, offset, subCategory));
+    ipcMain.handle('igdb:get-featured-games', (event, limit) => handleGetFeaturedGames(limit));
+    ipcMain.handle('igdb:get-game-details', (event, gameId) => handleGetGameDetails(gameId));
+    ipcMain.handle('igdb:search-games', (event, query, limit) => handleSearchGames(query, limit));
+    ipcMain.handle('igdb:clear-cache', clearCache);
+    
+    console.log('IGDB service initialized with proxy integration');
+  } catch (error) {
+    console.warn('Failed to initialize IGDB service:', error.message);
   }
-
-  RATE_LIMIT.isProcessing = true;
-
-  while (RATE_LIMIT.requestQueue.length > 0) {
-    const now = Date.now();
-    const timeSinceLastRequest = now - RATE_LIMIT.lastRequestTime;
-    const minInterval = 1000 / RATE_LIMIT.maxRequestsPerSecond; // 250ms between requests
-
-    if (timeSinceLastRequest < minInterval) {
-      await sleep(minInterval - timeSinceLastRequest);
-    }
-
-    const { resolve, reject, requestFn } = RATE_LIMIT.requestQueue.shift();
-    RATE_LIMIT.lastRequestTime = Date.now();
-
-    try {
-      const result = await requestFn();
-      resolve(result);
-    } catch (error) {
-      reject(error);
-    }
-
-    // Small delay between requests to be extra safe
-    await sleep(getJitter(250));
-  }
-
-  RATE_LIMIT.isProcessing = false;
 }
 
-// Queue a request with rate limiting
-function queueRequest(requestFn) {
-  return new Promise((resolve, reject) => {
-    RATE_LIMIT.requestQueue.push({ resolve, reject, requestFn });
-    processRequestQueue();
-  });
-}
-
-// Retry function with exponential backoff
-async function retryWithBackoff(fn, retries = RETRY_CONFIG.maxRetries) {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      // If it's a 429 error and we have retries left, wait and retry
-      if (error.response && error.response.status === 429 && attempt < retries) {
-        const delay = Math.min(
-          RETRY_CONFIG.baseDelay * Math.pow(RETRY_CONFIG.backoffMultiplier, attempt),
-          RETRY_CONFIG.maxDelay
-        );
-        const jitteredDelay = getJitter(delay);
-        
-        console.log(`Rate limited (429), retrying in ${Math.round(jitteredDelay)}ms... (attempt ${attempt + 1}/${retries + 1})`);
-        await sleep(jitteredDelay);
-        continue;
-      }
-      
-      // If it's the last attempt or not a 429 error, throw the error
-      throw error;
+// Clear cache function
+function clearCache() {
+  try {
+    if (cacheStore) {
+      cacheStore.clear();
+      console.log('IGDB cache cleared');
+      return { success: true };
     }
+    return { success: false, error: 'Cache store not initialized' };
+  } catch (error) {
+    console.error('Failed to clear cache:', error.message);
+    return { success: false, error: error.message };
   }
 }
 
@@ -191,212 +135,49 @@ function setCachedData(cacheKey, data) {
   }
 }
 
-// Generate access token from Client ID and Client Secret
-async function generateAccessToken(clientId, clientSecret) {
-  try {
-    const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
-      params: {
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: 'client_credentials'
-      },
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
-
-    return {
-      success: true,
-      accessToken: response.data.access_token,
-      expiresIn: response.data.expires_in,
-      tokenType: response.data.token_type
-    };
-  } catch (error) {
-    console.error('Failed to generate access token:', error);
-    if (error.response && error.response.status === 400) {
-      throw new Error('Invalid Client ID or Client Secret. Please check your credentials.');
-    }
-    throw new Error('Failed to generate access token. Please check your internet connection and try again.');
-  }
-}
-
-// Check if access token is expired
-function isTokenExpired() {
-  try {
-    if (!store) return true;
-    
-    const tokenExpiry = store.get('tokenExpiry');
-    if (!tokenExpiry) return true;
-    
-    // Add 5 minute buffer before actual expiry
-    const bufferTime = 5 * 60 * 1000; // 5 minutes in milliseconds
-    return Date.now() >= (tokenExpiry - bufferTime);
-  } catch (error) {
-    console.warn('Failed to check token expiry:', error.message);
-    return true;
-  }
-}
-
-// Initialize the service
-function initIgdbService() {
-  try {
-    // Create a secure store for API credentials
-    store = new Store({
-      name: 'igdb-api',
-      encryptionKey: 'your-encryption-key', // In a real app, generate this securely
-    });
-
-    // Create a separate store for caching
-    cacheStore = new Store({
-      name: 'igdb-cache',
-      encryptionKey: 'your-cache-encryption-key',
-    });
-
-    // Register IPC handlers for renderer process to communicate with this service
-    ipcMain.handle('igdb:get-credentials', getCredentials);
-    ipcMain.handle('igdb:set-credentials', (event, clientId, clientSecret) => setCredentials(clientId, clientSecret));
-    ipcMain.handle('igdb:test-credentials', (event, clientId, clientSecret) => testCredentials(clientId, clientSecret));
-    ipcMain.handle('igdb:get-popular-new-games', (event, limit, offset) => handleGetPopularNewGames(limit, offset));
-    ipcMain.handle('igdb:get-games-by-genre', (event, genre, limit, offset, subCategory) => handleGetGamesByGenre(genre, limit, offset, subCategory));
-    ipcMain.handle('igdb:get-featured-games', (event, limit) => handleGetFeaturedGames(limit));
-    ipcMain.handle('igdb:get-game-details', (event, gameId) => handleGetGameDetails(gameId));
-    ipcMain.handle('igdb:search-games', (event, query, limit) => handleSearchGames(query, limit));
-    ipcMain.handle('igdb:clear-cache', clearCache);
-    
-    console.log('IGDB service initialized with rate limiting and caching');
-  } catch (error) {
-    console.warn('Failed to initialize IGDB service:', error.message);
-  }
-}
-
-// Clear cache function
-function clearCache() {
-  try {
-    if (cacheStore) {
-      cacheStore.clear();
-      console.log('IGDB cache cleared');
-      return { success: true };
-    }
-    return { success: false, error: 'Cache store not initialized' };
-  } catch (error) {
-    console.error('Failed to clear cache:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-// Get the stored credentials
-function getCredentials() {
-  try {
-    if (!store) {
-      return { clientId: null, clientSecret: null, accessToken: null };
-    }
-    
-    const clientId = store.get('clientId');
-    const clientSecret = store.get('clientSecret');
-    const accessToken = store.get('accessToken');
-    return { 
-      clientId: clientId || null,
-      clientSecret: clientSecret || null,
-      accessToken: accessToken || null
-    };
-  } catch (error) {
-    console.warn('Failed to get IGDB credentials:', error.message);
-    return { clientId: null, clientSecret: null, accessToken: null };
-  }
-}
-
-// Test credentials by generating access token
-async function testCredentials(clientId, clientSecret) {
-  try {
-    if (!clientId || !clientSecret) {
-      throw new Error('Both Client ID and Client Secret are required');
-    }
-
-    const tokenResult = await generateAccessToken(clientId, clientSecret);
-    return { success: true, message: 'Credentials are valid!' };
-  } catch (error) {
-    console.error('Failed to test IGDB credentials:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-// Set the credentials and generate access token
-async function setCredentials(clientId, clientSecret) {
-  try {
-    if (!store) {
-      throw new Error('Store not initialized');
-    }
-    
-    if (!clientId || !clientSecret) {
-      throw new Error('Both Client ID and Client Secret are required');
-    }
-
-    // Test credentials by generating access token
-    const tokenResult = await generateAccessToken(clientId, clientSecret);
-    
-    if (!tokenResult.success) {
-      throw new Error('Failed to validate credentials');
-    }
-
-    // Calculate expiry timestamp
-    const expiryTimestamp = Date.now() + (tokenResult.expiresIn * 1000);
-    
-    // Store all credential information
-    store.set('clientId', clientId);
-    store.set('clientSecret', clientSecret);
-    store.set('accessToken', tokenResult.accessToken);
-    store.set('tokenExpiry', expiryTimestamp);
-    
-    console.log('IGDB credentials updated successfully');
-    return { success: true, accessToken: tokenResult.accessToken };
-  } catch (error) {
-    console.error('Failed to set IGDB credentials:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-// Ensure we have a valid access token
-async function ensureValidToken() {
-  const { clientId, clientSecret, accessToken } = getCredentials();
-  
-  if (!clientId || !clientSecret) {
-    throw new Error('IGDB credentials not configured. Please set your Client ID and Client Secret in Settings.');
-  }
-  
-  // If no token or token is expired, generate a new one
-  if (!accessToken || isTokenExpired()) {
-    console.log('Access token expired or missing, generating new token...');
-    const result = await setCredentials(clientId, clientSecret);
-    if (!result.success) {
-      throw new Error(result.error);
-    }
-    return result.accessToken;
-  }
-  
-  return accessToken;
-}
-
-// Make API request with rate limiting and retry logic
+// Make API request through the IGDB proxy
 async function makeApiRequest(endpoint, query) {
-  const accessToken = await ensureValidToken();
-  const { clientId } = getCredentials();
-
-  const requestFn = async () => {
-    return await axios({
-      url: `${BASE_URL}/${endpoint}`,
+  try {
+    console.log(`Making IGDB proxy request to ${endpoint}`);
+    
+    const response = await makeProxyRequest(`${IGDB_PROXY_URL}/${endpoint}`, {
       method: 'POST',
       headers: {
-        'Client-ID': clientId,
-        'Authorization': `Bearer ${accessToken}`,
-        'Accept': 'application/json',
         'Content-Type': 'text/plain'
       },
       data: query
     });
-  };
-
-  // Queue the request with rate limiting and retry with backoff
-  return await retryWithBackoff(() => queueRequest(requestFn));
+    
+    return response;
+  } catch (error) {
+    console.error('IGDB proxy request failed:', error);
+    
+    if (error.response) {
+      const status = error.response.status;
+      const data = error.response.data;
+      
+      switch (status) {
+        case 401:
+          throw new Error('Authentication failed. Please restart the application.');
+        case 429:
+          throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+        case 500:
+          throw new Error('IGDB service temporarily unavailable. Please try again later.');
+        default:
+          throw new Error(`IGDB service error: ${data?.error || 'Unknown error'}`);
+      }
+    }
+    
+    if (error.code === 'ECONNABORTED') {
+      throw new Error('Request timeout. Please check your internet connection.');
+    }
+    
+    if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+      throw new Error('Cannot connect to IGDB service. Please check your internet connection.');
+    }
+    
+    throw new Error(`Failed to fetch data from IGDB: ${error.message}`);
+  }
 }
 
 // Handler for getting popular new games with error handling and caching
@@ -436,8 +217,7 @@ async function handleGetPopularNewGames(limit = 20, offset = 0) {
     
     return { 
       games: [], 
-      error: error.message,
-      credentialsRequired: error.message.includes('credentials not configured')
+      error: error.message
     };
   }
 }
@@ -479,8 +259,7 @@ async function handleGetGamesByGenre(genre, limit = 20, offset = 0, subCategory 
     
     return { 
       games: [], 
-      error: error.message,
-      credentialsRequired: error.message.includes('credentials not configured')
+      error: error.message
     };
   }
 }
@@ -522,8 +301,7 @@ async function handleGetFeaturedGames(limit = 5) {
     
     return { 
       games: [], 
-      error: error.message,
-      credentialsRequired: error.message.includes('credentials not configured')
+      error: error.message
     };
   }
 }
@@ -564,8 +342,7 @@ async function handleGetGameDetails(gameId) {
     }
     
     return { 
-      error: error.message,
-      credentialsRequired: error.message.includes('credentials not configured')
+      error: error.message
     };
   }
 }
@@ -620,14 +397,8 @@ async function searchGames(query, limit = 10) {
     
     return { games };
   } catch (error) {
-    if (error.response && error.response.status === 401) {
-      throw new Error('IGDB credentials are invalid. Please check your Client ID and Client Secret in Settings.');
-    }
-    if (error.response && error.response.status === 429) {
-      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-    }
     console.error(`Error searching games from IGDB:`, error);
-    throw new Error(`Failed to search games from IGDB. Please check your internet connection and credentials.`);
+    throw error;
   }
 }
 
@@ -640,8 +411,7 @@ async function handleSearchGames(query, limit = 10) {
     console.warn('IGDB search API call failed:', error.message);
     return { 
       games: [], 
-      error: error.message,
-      credentialsRequired: error.message.includes('credentials not configured')
+      error: error.message
     };
   }
 }
@@ -731,14 +501,8 @@ async function getPopularNewGames(limit = 20, offset = 0) {
     
     return { games };
   } catch (error) {
-    if (error.response && error.response.status === 401) {
-      throw new Error('IGDB credentials are invalid. Please check your Client ID and Client Secret in Settings.');
-    }
-    if (error.response && error.response.status === 429) {
-      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-    }
     console.error('Error fetching popular games from IGDB:', error);
-    throw new Error('Failed to fetch popular games from IGDB. Please check your internet connection and credentials.');
+    throw error;
   }
 }
 
@@ -758,14 +522,8 @@ async function getGamesByGenre(genre, limit = 20, offset = 0, subCategory = null
     // Standard genre filtering without sub-category
     return await getGamesByGenreStandard(genreId, limit, offset);
   } catch (error) {
-    if (error.response && error.response.status === 401) {
-      throw new Error('IGDB credentials are invalid. Please check your Client ID and Client Secret in Settings.');
-    }
-    if (error.response && error.response.status === 429) {
-      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-    }
     console.error(`Error fetching ${genre} games from IGDB:`, error);
-    throw new Error(`Failed to fetch ${genre} games from IGDB. Please check your internet connection and credentials.`);
+    throw error;
   }
 }
 
@@ -977,14 +735,8 @@ async function getFeaturedGames(limit = 5) {
     
     return { games };
   } catch (error) {
-    if (error.response && error.response.status === 401) {
-      throw new Error('IGDB credentials are invalid. Please check your Client ID and Client Secret in Settings.');
-    }
-    if (error.response && error.response.status === 429) {
-      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-    }
     console.error('Error fetching featured games from IGDB:', error);
-    throw new Error('Failed to fetch featured games from IGDB. Please check your internet connection and credentials.');
+    throw error;
   }
 }
 
@@ -1144,14 +896,8 @@ async function getGameDetails(gameId) {
     
     return gameDetails;
   } catch (error) {
-    if (error.response && error.response.status === 401) {
-      throw new Error('IGDB credentials are invalid. Please check your Client ID and Client Secret in Settings.');
-    }
-    if (error.response && error.response.status === 429) {
-      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-    }
     console.error(`Error fetching details for game ${gameId} from IGDB:`, error);
-    throw new Error(`Failed to fetch details for game ${gameId} from IGDB. Please check your internet connection and credentials.`);
+    throw error;
   }
 }
 
@@ -1162,11 +908,10 @@ function getUniversalSubCategories() {
 
 module.exports = {
   initIgdbService,
-  getCredentials,
-  setCredentials,
-  testCredentials,
   getPopularNewGames,
   getGameDetails,
   createApiClient,
   getUniversalSubCategories
 };
+
+module.exports

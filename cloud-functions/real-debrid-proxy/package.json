@@ -1,0 +1,15 @@
+{
+  "name": "real-debrid-proxy",
+  "version": "1.0.0",
+  "description": "Proxy for Real-Debrid API calls",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.3.0",
+    "@google-cloud/secret-manager": "^5.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": "18"
+  }
+}

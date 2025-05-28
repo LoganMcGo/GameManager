@@ -4,6 +4,7 @@ const url = require('url');
 const { initRealDebridService } = require('./src/services/realDebridService');
 const { initIgdbService } = require('./src/services/igdbService');
 const { initDownloadService } = require('./src/services/downloadService');
+const { initJwtService } = require('./src/services/jwtService');
 
 // Keep a global reference of the window object to prevent it from being garbage collected
 let mainWindow;
@@ -114,6 +115,7 @@ function setupWindowControls() {
 app.whenReady().then(() => {
   createWindow();
   setupWindowControls();
+  initJwtService();
   initRealDebridService();
   initIgdbService();
   

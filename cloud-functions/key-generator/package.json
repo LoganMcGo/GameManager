@@ -1,0 +1,15 @@
+{
+  "name": "key-generator",
+  "version": "1.0.0",
+  "description": "Generate JWT tokens for Game Manager installations",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.3.0",
+    "@google-cloud/secret-manager": "^5.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "crypto": "^1.0.1"
+  },
+  "engines": {
+    "node": "18"
+  }
+}
