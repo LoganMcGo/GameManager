@@ -61,36 +61,25 @@ export function IgdbProvider({ children }) {
 
   // Function to fetch game details
   const fetchGameDetails = useCallback(async (gameId) => {
-    if (!clientId || !clientSecret) {
-      setError('IGDB credentials not configured');
-      return { success: false, error: 'IGDB credentials not configured' };
-    }
-
     setError(null);
     
     try {
       const result = await window.api.igdb.getGameDetails(gameId);
       
       if (result.error) {
-        setError(result.error);
+        console.error('Error fetching game details:', result.error);
         return { success: false, error: result.error };
       }
       
       return { success: true, gameDetails: result.gameDetails };
     } catch (error) {
       console.error(`Error fetching details for game ${gameId}:`, error);
-      setError(`Failed to fetch details for game ${gameId}`);
-      return { success: false, error };
+      return { success: false, error: 'Failed to fetch game details' };
     }
-  }, [clientId, clientSecret]);
+  }, []);
 
   // Function to search games
   const searchGames = useCallback(async (query, limit = 10) => {
-    if (!clientId || !clientSecret) {
-      setError('IGDB credentials not configured');
-      return { success: false, error: 'IGDB credentials not configured' };
-    }
-
     if (!query || query.trim().length < 2) {
       return { success: true, games: [] };
     }
@@ -101,67 +90,54 @@ export function IgdbProvider({ children }) {
       const result = await window.api.igdb.searchGames(query, limit);
       
       if (result.error) {
-        setError(result.error);
+        console.error('Error searching games:', result.error);
         return { success: false, error: result.error };
       }
       
       return { success: true, games: result.games };
     } catch (error) {
       console.error(`Error searching games:`, error);
-      setError(`Failed to search games`);
-      return { success: false, error };
+      return { success: false, error: 'Failed to search games' };
     }
-  }, [clientId, clientSecret]);
+  }, []);
 
   // Function to fetch games by genre
   const fetchGamesByGenre = useCallback(async (genre, limit = 20, offset = 0) => {
-    if (!clientId || !clientSecret) {
-      setError('IGDB credentials not configured');
-      return { success: false, error: 'IGDB credentials not configured' };
-    }
-
     setError(null);
     
     try {
       const { games, error: apiError } = await window.api.igdb.getGamesByGenre(genre, limit, offset);
       
       if (apiError) {
-        setError(apiError);
+        console.error('Error fetching games by genre:', apiError);
         return { success: false, error: apiError };
       }
       
       return { success: true, games };
     } catch (error) {
       console.error(`Error fetching ${genre} games:`, error);
-      setError(`Failed to fetch ${genre} games`);
-      return { success: false, error };
+      return { success: false, error: `Failed to fetch ${genre} games` };
     }
-  }, [clientId, clientSecret]);
+  }, []);
 
   // Function to fetch featured games
   const fetchFeaturedGames = useCallback(async (limit = 5) => {
-    if (!clientId || !clientSecret) {
-      setError('IGDB credentials not configured');
-      return { success: false, error: 'IGDB credentials not configured' };
-    }
-
     setError(null);
     
     try {
       const { games, error: apiError } = await window.api.igdb.getFeaturedGames(limit);
       
       if (apiError) {
-        setError(apiError);
+        console.error('Error fetching featured games:', apiError);
         return { success: false, error: apiError };
       }
       
       return { success: true, games };
     } catch (error) {
       console.error('Error fetching featured games:', error);
-      setError('Failed to fetch featured games');
-      return { success: false, error };
+      return { success: false, error: 'Failed to fetch featured games' };
     }
-  }, [clientId, clientSecret]);
+  }, []);
 
   // The context value that will be provided
   const contextValue = useMemo(() => ({

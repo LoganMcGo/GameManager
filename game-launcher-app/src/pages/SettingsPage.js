@@ -1,21 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useIgdb } from '../context/IgdbContext';
 import gameDownloadService from '../services/gameDownloadService';
 
 function SettingsPage({ onGameSelect }) {
   const { isAuthenticated, userInfo, startAuthFlow, checkAuthFlowStatus, disconnect } = useAuth();
-  const { clientId, clientSecret, testCredentials, saveCredentials } = useIgdb();
   const [isConnecting, setIsConnecting] = useState(false);
   const [authFlow, setAuthFlow] = useState(null);
   const [error, setError] = useState(null);
-  const [igdbClientId, setIgdbClientId] = useState(clientId || '');
-  const [igdbClientSecret, setIgdbClientSecret] = useState(clientSecret || '');
-  const [igdbCredentialsError, setIgdbCredentialsError] = useState(null);
-  const [igdbCredentialsSuccess, setIgdbCredentialsSuccess] = useState(null);
-  const [isSavingIgdbCredentials, setIsSavingIgdbCredentials] = useState(false);
-  const [isTestingCredentials, setIsTestingCredentials] = useState(false);
   const [currentPollInterval, setCurrentPollInterval] = useState(8); // Track current polling interval in seconds
+
+  // IGDB cloud proxy status state
+  const [igdbStatus, setIgdbStatus] = useState({ connected: false, message: 'Not tested' });
+  const [igdbError, setIgdbError] = useState(null);
+  const [isTestingIgdb, setIsTestingIgdb] = useState(false);
+
+  // Real-Debrid cloud proxy status state
+  const [realDebridProxyError, setRealDebridProxyError] = useState(null);
+  const [isTestingRealDebridProxy, setIsTestingRealDebridProxy] = useState(false);
 
   // Jackett settings state
   const [jackettEnabled, setJackettEnabled] = useState(false);
@@ -44,6 +45,7 @@ function SettingsPage({ onGameSelect }) {
     loadJackettSettings();
     loadProviderSettings();
     loadDownloadLocationSettings();
+    testIgdbConnection(); // Test IGDB cloud proxy on mount
   }, []);
 
   // Load download location settings
@@ -252,6 +254,7 @@ function SettingsPage({ onGameSelect }) {
   const handleStartAuthFlow = async () => {
     setIsConnecting(true);
     setError(null);
+    setRealDebridProxyError(null); // Clear any previous proxy errors
     
     try {
       const authData = await startAuthFlow();
@@ -276,12 +279,19 @@ function SettingsPage({ onGameSelect }) {
               clearInterval(poll);
               setIsConnecting(false);
               setAuthFlow(null);
+              setRealDebridProxyError(null); // Clear any proxy errors on success
             } else if (status.status === 'error') {
               console.error('Authentication error:', status.message);
               clearInterval(poll);
               setIsConnecting(false);
               setAuthFlow(null);
-              setError(status.message || 'Authentication failed');
+              
+              // Check if it's a cloud proxy error
+              if (status.message && (status.message.includes('proxy') || status.message.includes('cloud') || status.message.includes('fetch'))) {
+                setRealDebridProxyError(status.message);
+              } else {
+                setError(status.message || 'Authentication failed');
+              }
             } else if (status.status === 'expired') {
               console.error('Authentication expired');
               clearInterval(poll);
@@ -318,7 +328,13 @@ function SettingsPage({ onGameSelect }) {
             clearInterval(poll);
             setIsConnecting(false);
             setAuthFlow(null);
-            setError('Authentication failed');
+            
+            // Check if it's a cloud proxy error
+            if (err.message && (err.message.includes('proxy') || err.message.includes('cloud') || err.message.includes('fetch'))) {
+              setRealDebridProxyError(`Cloud proxy error during authentication: ${err.message}`);
+            } else {
+              setError('Authentication failed');
+            }
           }
         }, pollInterval);
 
@@ -338,7 +354,13 @@ function SettingsPage({ onGameSelect }) {
     } catch (err) {
       console.error('Error starting auth flow:', err);
       setIsConnecting(false);
-      setError('Failed to start authentication. Please try again.');
+      
+      // Check if it's a cloud proxy error
+      if (err.message && (err.message.includes('proxy') || err.message.includes('cloud') || err.message.includes('fetch'))) {
+        setRealDebridProxyError(`Failed to start authentication via cloud proxy: ${err.message}`);
+      } else {
+        setError('Failed to start authentication. Please try again.');
+      }
     }
   };
 
@@ -359,57 +381,65 @@ function SettingsPage({ onGameSelect }) {
     }
   };
 
-  // Test IGDB credentials
-  const handleTestCredentials = async () => {
-    if (!igdbClientId.trim() || !igdbClientSecret.trim()) {
-      setIgdbCredentialsError('Both Client ID and Client Secret are required');
-      return;
-    }
-
-    setIsTestingCredentials(true);
-    setIgdbCredentialsError(null);
-    setIgdbCredentialsSuccess(null);
-
+  // Test IGDB cloud proxy connection
+  const testIgdbConnection = async () => {
+    setIsTestingIgdb(true);
+    setIgdbError(null);
+    
     try {
-      const result = await testCredentials(igdbClientId, igdbClientSecret);
-      setIsTestingCredentials(false);
-
-      if (result.success) {
-        setIgdbCredentialsSuccess('Credentials are valid! You can now save them.');
+      // Test by fetching a small number of popular games
+      const result = await window.api.igdb.getPopularNewGames(1, 0);
+      
+      if (result.games && result.games.length > 0) {
+        setIgdbStatus({ 
+          connected: true, 
+          message: 'Cloud proxy connection successful' 
+        });
+      } else if (result.error) {
+        setIgdbStatus({ 
+          connected: false, 
+          message: 'Cloud proxy connection failed' 
+        });
+        setIgdbError(`IGDB API Error: ${result.error}`);
       } else {
-        setIgdbCredentialsError(result.error || 'Invalid credentials');
+        setIgdbStatus({ 
+          connected: false, 
+          message: 'No data received from cloud proxy' 
+        });
+        setIgdbError('Cloud proxy returned no data - this might indicate a configuration issue');
       }
     } catch (error) {
-      console.error('Error testing IGDB credentials:', error);
-      setIgdbCredentialsError('Failed to test credentials');
-      setIsTestingCredentials(false);
+      console.error('Error testing IGDB cloud proxy:', error);
+      setIgdbStatus({ 
+        connected: false, 
+        message: 'Cloud proxy test failed' 
+      });
+      setIgdbError(`Connection Error: ${error.message || 'Failed to connect to IGDB cloud proxy'}`);
+    } finally {
+      setIsTestingIgdb(false);
     }
   };
 
-  // Save IGDB credentials
-  const handleSaveCredentials = async () => {
-    if (!igdbClientId.trim() || !igdbClientSecret.trim()) {
-      setIgdbCredentialsError('Both Client ID and Client Secret are required');
-      return;
-    }
-
-    setIsSavingIgdbCredentials(true);
-    setIgdbCredentialsError(null);
-    setIgdbCredentialsSuccess(null);
-
+  // Test Real-Debrid cloud proxy connection (basic connectivity test)
+  const testRealDebridProxy = async () => {
+    setIsTestingRealDebridProxy(true);
+    setRealDebridProxyError(null);
+    
     try {
-      const result = await saveCredentials(igdbClientId, igdbClientSecret);
-      setIsSavingIgdbCredentials(false);
-
-      if (result.success) {
-        setIgdbCredentialsSuccess('Credentials saved successfully!');
-      } else {
-        setIgdbCredentialsError(result.error || 'Failed to save credentials');
+      // Test the proxy by attempting to get auth status (this should work even without tokens)
+      const result = await window.api.realDebrid.getAuthStatus();
+      
+      if (result.success !== undefined) {
+        // If we got any response from the proxy, it's working
+        setRealDebridProxyError(null);
+      } else if (result.error) {
+        setRealDebridProxyError(`Real-Debrid API Error: ${result.error}`);
       }
     } catch (error) {
-      console.error('Error saving IGDB credentials:', error);
-      setIgdbCredentialsError('Failed to save IGDB credentials');
-      setIsSavingIgdbCredentials(false);
+      console.error('Error testing Real-Debrid cloud proxy:', error);
+      setRealDebridProxyError(`Cloud Proxy Error: ${error.message || 'Failed to connect to Real-Debrid cloud proxy'}`);
+    } finally {
+      setIsTestingRealDebridProxy(false);
     }
   };
 
@@ -423,7 +453,29 @@ function SettingsPage({ onGameSelect }) {
           
           {error && (
             <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <p>{error}</p>
+              <div className="flex items-start">
+                <svg className="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <div>
+                  <p className="font-medium">Authentication Error</p>
+                  <p className="text-sm mt-1">{error}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {realDebridProxyError && (
+            <div className="bg-red-900 text-white p-4 rounded-md mb-4">
+              <div className="flex items-start">
+                <svg className="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <div>
+                  <p className="font-medium">Cloud Proxy Connection Error</p>
+                  <p className="text-sm mt-1">{realDebridProxyError}</p>
+                </div>
+              </div>
             </div>
           )}
           
@@ -432,12 +484,33 @@ function SettingsPage({ onGameSelect }) {
               <p className="mb-4 text-gray-300">
                 Connect your Real-Debrid account to enable downloading games using Real-Debrid's premium services.
               </p>
-              <button
-                onClick={handleStartAuthFlow}
-                className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors duration-300"
-              >
-                Connect to Real-Debrid
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleStartAuthFlow}
+                  className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors duration-300"
+                >
+                  Connect to Real-Debrid
+                </button>
+                <button
+                  onClick={testRealDebridProxy}
+                  disabled={isTestingRealDebridProxy}
+                  className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
+                >
+                  {isTestingRealDebridProxy ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
+                      Testing...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                      </svg>
+                      Test Cloud Proxy
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           )}
           
@@ -524,12 +597,33 @@ function SettingsPage({ onGameSelect }) {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={handleDisconnect}
-                className="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md transition-colors duration-300"
-              >
-                Disconnect
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleDisconnect}
+                  className="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md transition-colors duration-300"
+                >
+                  Disconnect
+                </button>
+                <button
+                  onClick={testRealDebridProxy}
+                  disabled={isTestingRealDebridProxy}
+                  className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
+                >
+                  {isTestingRealDebridProxy ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
+                      Testing...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                      </svg>
+                      Test Cloud Proxy
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -603,73 +697,89 @@ function SettingsPage({ onGameSelect }) {
           </div>
         </div>
         
-        {/* IGDB API Settings */}
+        {/* IGDB Game Database Status */}
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
-          <h2 className="text-xl font-bold mb-4">IGDB API Settings</h2>
+          <h2 className="text-xl font-bold mb-4">IGDB Game Database</h2>
           
-          {igdbCredentialsError && (
+          {igdbError && (
             <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <p>{igdbCredentialsError}</p>
-            </div>
-          )}
-
-          {igdbCredentialsSuccess && (
-            <div className="bg-green-900 text-white p-4 rounded-md mb-4">
-              <p>{igdbCredentialsSuccess}</p>
+              <div className="flex items-start">
+                <svg className="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <div>
+                  <p className="font-medium">Cloud Proxy Connection Error</p>
+                  <p className="text-sm mt-1">{igdbError}</p>
+                </div>
+              </div>
             </div>
           )}
           
-          <div className="mb-4">
-            <label className="block text-gray-300 mb-2">Twitch Client ID</label>
-            <input
-              type="text"
-              className="w-full bg-gray-700 text-white px-3 py-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
-              placeholder="Enter your Twitch Client ID"
-              value={igdbClientId}
-              onChange={(e) => setIgdbClientId(e.target.value)}
-            />
-            
-            <label className="block text-gray-300 mb-2">Twitch Client Secret</label>
-            <input
-              type="password"
-              className="w-full bg-gray-700 text-white px-3 py-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
-              placeholder="Enter your Twitch Client Secret"
-              value={igdbClientSecret}
-              onChange={(e) => setIgdbClientSecret(e.target.value)}
-            />
-            
-            <div className="flex gap-3">
-              <button 
-                className="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded-md transition-colors duration-300"
-                onClick={handleTestCredentials}
-                disabled={isTestingCredentials || isSavingIgdbCredentials}
-              >
-                {isTestingCredentials ? 'Testing...' : 'Test Credentials'}
-              </button>
-              
-              <button 
-                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md transition-colors duration-300"
-                onClick={handleSaveCredentials}
-                disabled={isTestingCredentials || isSavingIgdbCredentials}
-              >
-                {isSavingIgdbCredentials ? 'Saving...' : 'Save Credentials'}
-              </button>
+          <div className="flex items-center mb-4">
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center mr-3 ${igdbStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}>
+              {igdbStatus.connected ? (
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
+                </svg>
+              ) : (
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+              )}
             </div>
+            <div>
+              <p className={`font-medium ${igdbStatus.connected ? 'text-green-400' : 'text-red-400'}`}>
+                {igdbStatus.connected ? 'Connected to IGDB' : 'IGDB Connection Failed'}
+              </p>
+              <p className="text-sm text-gray-400">{igdbStatus.message}</p>
+            </div>
+          </div>
+          
+          <div className="flex gap-3 mb-4">
+            <button
+              onClick={testIgdbConnection}
+              disabled={isTestingIgdb}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
+            >
+              {isTestingIgdb ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
+                  Testing...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                  </svg>
+                  Test Connection
+                </>
+              )}
+            </button>
           </div>
           
           <div className="mt-4 p-4 bg-gray-700 rounded-md">
-            <h3 className="text-lg font-semibold mb-2">How to get IGDB credentials:</h3>
-            <ol className="list-decimal list-inside text-gray-300 space-y-1">
-              <li>Go to <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Twitch Developer Console</a></li>
-              <li>Register or log in to your Twitch account</li>
-              <li>Create a new application</li>
-              <li>Set OAuth Redirect URLs to: http://localhost</li>
-              <li>Select "Game Integration" as the category</li>
-              <li>Copy the Client ID and Client Secret</li>
-            </ol>
+            <p className="text-gray-300 text-sm mb-2">
+              The game database connection is managed automatically through our secure cloud service. 
+              {igdbStatus.connected 
+                ? ' The connection is working properly and you can browse games normally.'
+                : ' If you\'re experiencing issues, try testing the connection or check your internet connection.'
+              }
+            </p>
+            {!igdbStatus.connected && (
+              <div className="mt-3 p-3 bg-red-900 border border-red-700 rounded">
+                <p className="text-red-300 text-sm">
+                  <strong>Troubleshooting:</strong> If the connection test fails, this might indicate issues with:
+                </p>
+                <ul className="text-red-300 text-sm mt-2 ml-4 list-disc">
+                  <li>Internet connectivity</li>
+                  <li>Firewall blocking the application</li>
+                  <li>Temporary cloud service issues</li>
+                </ul>
+              </div>
+            )}
           </div>
         </div>
-
+        
         {/* Jackett Settings */}
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">Jackett Integration (Optional)</h2>

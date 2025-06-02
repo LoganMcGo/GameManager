@@ -65,10 +65,10 @@ function CategoryPage({ category, onNavigate, onGameSelect }) {
 
   // Fetch games when component mounts, category changes, page changes, or sub-category changes
   useEffect(() => {
-    if (clientId && accessToken && category) {
+    if (category) {
       fetchCategoryGamesPage(currentPage);
     }
-  }, [clientId, accessToken, category, currentPage, selectedSubCategory]);
+  }, [category, currentPage, selectedSubCategory]);
 
   // Reset to page 1 when category or sub-category changes
   useEffect(() => {
@@ -197,28 +197,6 @@ function CategoryPage({ category, onNavigate, onGameSelect }) {
       {/* Search Bar */}
       <SearchBar onGameSelect={onGameSelect} />
       
-      {/* IGDB Credentials Not Configured Message */}
-      {(!clientId || !accessToken) && (
-        <div className="bg-yellow-800 text-yellow-100 p-4 rounded-lg mb-4 sm:mb-6 lg:mb-8">
-          <h3 className="font-bold mb-2 responsive-text">IGDB Credentials Not Configured</h3>
-          <p className="mb-2 text-sm sm:text-base">To display real game data, please configure your IGDB Client ID and Client Secret in the settings.</p>
-          <button 
-            className="bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-2 sm:px-4 sm:py-2 rounded text-sm"
-            onClick={() => onNavigate('settings')}
-          >
-            Go to Settings
-          </button>
-        </div>
-      )}
-      
-      {/* Error Message */}
-      {error && (
-        <div className="bg-red-800 text-red-100 p-4 rounded-lg mb-4 sm:mb-6 lg:mb-8">
-          <h3 className="font-bold mb-2 responsive-text">Error</h3>
-          <p className="text-sm sm:text-base">{error}</p>
-        </div>
-      )}
-
       {/* Breadcrumb */}
       <Breadcrumb items={breadcrumbItems} onNavigate={onNavigate} />
 
@@ -283,7 +261,7 @@ function CategoryPage({ category, onNavigate, onGameSelect }) {
         )}
         
         {/* No games message */}
-        {!isLoadingCategoryGames && filteredGames.length === 0 && clientId && accessToken && (
+        {!isLoadingCategoryGames && filteredGames.length === 0 && (
           <div className="bg-gray-800 rounded-lg p-6 sm:p-8 text-center mb-4 sm:mb-6 lg:mb-8">
             <p className="text-gray-400 responsive-text">No games found in this category.</p>
           </div>

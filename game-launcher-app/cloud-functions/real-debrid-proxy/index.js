@@ -79,13 +79,33 @@ async function makeRealDebridRequest(endpoint, options = {}) {
   const baseUrl = 'https://api.real-debrid.com/rest/1.0';
   const url = `${baseUrl}${endpoint}`;
   
+  let body = undefined;
+  let headers = {
+    'Authorization': options.headers?.Authorization,
+    ...options.headers
+  };
+  
+  // Handle different content types
+  if (options.body && options.method !== 'GET') {
+    if (options.contentType === 'application/x-www-form-urlencoded') {
+      // Convert object to URLSearchParams for form data
+      const formData = new URLSearchParams();
+      for (const [key, value] of Object.entries(options.body)) {
+        formData.append(key, value);
+      }
+      body = formData.toString();
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    } else {
+      // Default to JSON
+      body = JSON.stringify(options.body);
+      headers['Content-Type'] = 'application/json';
+    }
+  }
+  
   const response = await fetch(url, {
     method: options.method || 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined
+    headers: headers,
+    body: body
   });
   
   if (!response.ok) {
@@ -118,7 +138,7 @@ functions.http('realDebridProxy', async (req, res) => {
     await verifyToken(token);
     
     // Extract Real-Debrid API token from request
-    const { apiToken, endpoint, method = 'GET', body } = req.body;
+    const { apiToken, endpoint, method = 'GET', body, contentType } = req.body;
     
     if (!apiToken) {
       return res.status(400).json({
@@ -132,7 +152,7 @@ functions.http('realDebridProxy', async (req, res) => {
       });
     }
     
-    console.log(`Proxying Real-Debrid request: ${method} ${endpoint}`);
+    console.log(`Proxying Real-Debrid request: ${method} ${endpoint}`, contentType ? `(${contentType})` : '');
     
     // Make request to Real-Debrid API
     const result = await makeRealDebridRequest(endpoint, {
@@ -140,7 +160,8 @@ functions.http('realDebridProxy', async (req, res) => {
       headers: {
         'Authorization': `Bearer ${apiToken}`
       },
-      body
+      body,
+      contentType
     });
     
     res.status(200).json({

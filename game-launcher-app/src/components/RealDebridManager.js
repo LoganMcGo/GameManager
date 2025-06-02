@@ -6,7 +6,6 @@ function RealDebridManager({ onGameSelect }) {
   const { isAuthenticated, userInfo } = useAuth();
   const [downloads, setDownloads] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
 
   // Load data when component mounts
   useEffect(() => {
@@ -18,16 +17,19 @@ function RealDebridManager({ onGameSelect }) {
   // Load downloads
   const loadDownloads = async () => {
     setLoading(true);
-    setError(null);
     try {
       const response = await window.api.realDebrid.getDownloads();
       if (response.success) {
         setDownloads(response.data || []);
       } else {
-        setError('Failed to load downloads: ' + response.error);
+        console.error('Failed to load downloads:', response.error);
+        // Don't show error to user, just log it
+        setDownloads([]);
       }
     } catch (err) {
-      setError('Error loading downloads: ' + err.message);
+      console.error('Error loading downloads:', err.message);
+      // Don't show error to user, just log it and show empty state
+      setDownloads([]);
     } finally {
       setLoading(false);
     }
@@ -42,10 +44,14 @@ function RealDebridManager({ onGameSelect }) {
       if (response.success) {
         loadDownloads();
       } else {
-        setError('Failed to delete download: ' + response.error);
+        console.error('Failed to delete download:', response.error);
+        // Don't show error to user, just log it and refresh list
+        loadDownloads();
       }
     } catch (err) {
-      setError('Error deleting download: ' + err.message);
+      console.error('Error deleting download:', err.message);
+      // Don't show error to user, just log it and refresh list
+      loadDownloads();
     }
   };
 
@@ -136,24 +142,6 @@ function RealDebridManager({ onGameSelect }) {
           </div>
         </div>
       </div>
-
-      {/* Error Display */}
-      {error && (
-        <div className="bg-red-900 border border-red-700 text-white p-4 rounded-lg mb-6">
-          <div className="flex items-center">
-            <svg className="w-5 h-5 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-            </svg>
-            <span>{error}</span>
-          </div>
-          <button
-            onClick={() => setError(null)}
-            className="mt-2 text-sm text-red-300 hover:text-white underline"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
 
       {/* Downloads */}
       <div className="bg-gray-800 rounded-lg shadow-lg">

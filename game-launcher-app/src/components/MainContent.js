@@ -41,13 +41,11 @@ function MainContent(props) {
   
   // Fetch games when the component mounts or page changes
   useEffect(() => {
-    if (clientId && accessToken) {
-      fetchPopularGamesPage(currentPage);
-      if (currentPage === 1) {
-        fetchFeaturedGamesData();
-      }
+    fetchPopularGamesPage(currentPage);
+    if (currentPage === 1) {
+      fetchFeaturedGamesData();
     }
-  }, [clientId, accessToken, currentPage]);
+  }, [currentPage]);
   
   // Function to fetch popular games for a specific page
   const fetchPopularGamesPage = async (page) => {
@@ -175,28 +173,6 @@ function MainContent(props) {
       {/* Search Bar */}
       <SearchBar onGameSelect={onGameSelect} />
       
-      {/* IGDB Credentials Not Configured Message */}
-      {!isLoading && (!clientId || !accessToken) && (
-        <div className="bg-yellow-800 text-yellow-100 p-4 rounded-lg mb-4 sm:mb-6 lg:mb-8">
-          <h3 className="font-bold mb-2 responsive-text">IGDB Credentials Not Configured</h3>
-          <p className="mb-2 text-sm sm:text-base">To display real game data, please configure your IGDB Client ID and Client Secret in the settings.</p>
-          <button 
-            className="bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-2 sm:px-4 sm:py-2 rounded text-sm"
-            onClick={() => onNavigate('settings')}
-          >
-            Go to Settings
-          </button>
-        </div>
-      )}
-      
-      {/* Error Message */}
-      {error && (
-        <div className="bg-red-800 text-red-100 p-4 rounded-lg mb-4 sm:mb-6 lg:mb-8">
-          <h3 className="font-bold mb-2 responsive-text">Error</h3>
-          <p className="text-sm sm:text-base">{error}</p>
-        </div>
-      )}
-      
       {/* Category Navigation */}
       <CategoryNavigation onCategorySelect={handleCategorySelect} />
       
@@ -231,9 +207,9 @@ function MainContent(props) {
         )}
         
         {/* No games message */}
-        {!isLoadingGames && popularGames.length === 0 && clientId && accessToken && (
+        {!isLoadingGames && popularGames.length === 0 && (
           <div className="bg-gray-800 rounded-lg p-6 sm:p-8 text-center mb-4 sm:mb-6 lg:mb-8">
-            <p className="text-gray-400 responsive-text">No games found. Try refreshing or check your API key.</p>
+            <p className="text-gray-400 responsive-text">No games found. Try refreshing the page.</p>
           </div>
         )}
         

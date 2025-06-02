@@ -75,6 +75,15 @@ function initIgdbService() {
     ipcMain.handle('igdb:search-games', (event, query, limit) => handleSearchGames(query, limit));
     ipcMain.handle('igdb:clear-cache', clearCache);
     
+    // Legacy credential handlers (for backward compatibility with UI)
+    ipcMain.handle('igdb:get-credentials', () => ({ 
+      clientId: 'cloud-proxy', 
+      clientSecret: 'cloud-proxy', 
+      accessToken: 'cloud-proxy' 
+    }));
+    ipcMain.handle('igdb:set-credentials', () => ({ success: true, message: 'Using cloud proxy - credentials not needed' }));
+    ipcMain.handle('igdb:test-credentials', () => ({ success: true, message: 'Using cloud proxy - credentials not needed' }));
+    
     console.log('IGDB service initialized with proxy integration');
   } catch (error) {
     console.warn('Failed to initialize IGDB service:', error.message);

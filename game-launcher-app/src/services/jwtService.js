@@ -3,6 +3,7 @@ const Store = require('electron-store').default || require('electron-store');
 const { ipcMain } = require('electron');
 const os = require('os');
 const crypto = require('crypto');
+const path = require('path');
 
 // Cloud function URLs
 const KEY_GENERATOR_URL = 'https://us-central1-gamemanagerproxy.cloudfunctions.net/key-generator';
@@ -39,6 +40,14 @@ function initJwtService() {
 // Generate a unique machine identifier
 function generateMachineId() {
   try {
+    let username;
+    try {
+      username = os.userInfo().username;
+    } catch (error) {
+      console.warn('Could not get username for machine ID, using fallback');
+      username = process.env.USER || process.env.USERNAME || 'unknown';
+    }
+    
     // Collect system information for fingerprinting
     const systemInfo = {
       platform: os.platform(),
@@ -46,7 +55,7 @@ function generateMachineId() {
       hostname: os.hostname(),
       cpus: os.cpus().length,
       totalmem: os.totalmem(),
-      userInfo: os.userInfo().username,
+      userInfo: username,
       release: os.release()
     };
     
@@ -110,21 +119,55 @@ async function getJwtToken() {
 // Request a new JWT token from the cloud function
 async function requestNewToken() {
   try {
-    const machineId = generateMachineId();
+    // Get system information that the cloud function expects
+    let username;
+    try {
+      username = os.userInfo().username;
+    } catch (error) {
+      console.warn('Could not get username, using fallback');
+      username = process.env.USER || process.env.USERNAME || 'unknown';
+    }
     
-    const response = await axios.post(KEY_GENERATOR_URL, {
-      machine_id: machineId,
-      app_name: 'GameManager'
-    }, {
+    const systemInfo = {
+      hostname: os.hostname(),
+      username: username,
+      platform: os.platform(),
+      arch: os.arch(),
+      appPath: process.execPath || path.dirname(process.argv[0]),
+      appVersion: 'GameManager',
+      timestamp: Date.now()
+    };
+    
+    console.log('Sending system info for JWT token generation...');
+    
+    const response = await axios.post(KEY_GENERATOR_URL, systemInfo, {
       headers: {
         'Content-Type': 'application/json'
       },
       timeout: 10000 // 10 second timeout
     });
     
+    console.log('Cloud function response status:', response.status);
+    console.log('Cloud function response data:', response.data);
+    
+    // Handle different possible response formats
+    let token = null;
+    
     if (response.data && response.data.token) {
-      const token = response.data.token;
-      
+      // Format: { token: "jwt_token_here" }
+      token = response.data.token;
+    } else if (response.data && response.data.success && response.data.data && response.data.data.token) {
+      // Format: { success: true, data: { token: "jwt_token_here" } }
+      token = response.data.data.token;
+    } else if (typeof response.data === 'string' && response.data.length > 50) {
+      // Format: Direct JWT token string
+      token = response.data;
+    } else {
+      console.error('Unexpected response format:', response.data);
+      throw new Error('Invalid response from key generator');
+    }
+    
+    if (token) {
       // Cache the token
       tokenCache.token = token;
       
@@ -134,7 +177,7 @@ async function requestNewToken() {
       console.log('Successfully obtained new JWT token');
       return { success: true, token: token };
     } else {
-      throw new Error('Invalid response from key generator');
+      throw new Error('No token found in response');
     }
   } catch (error) {
     console.error('Error requesting new token:', error);
@@ -143,9 +186,12 @@ async function requestNewToken() {
       const status = error.response.status;
       const data = error.response.data;
       
+      console.error('Response status:', status);
+      console.error('Response data:', data);
+      
       switch (status) {
         case 400:
-          throw new Error('Invalid request parameters');
+          throw new Error(`Invalid request: ${data?.error || 'Bad request'}`);
         case 429:
           throw new Error('Rate limited. Please try again later.');
         case 500:

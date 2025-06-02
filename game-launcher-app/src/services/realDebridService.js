@@ -1,8 +1,12 @@
 const axios = require('axios');
 const Store = require('electron-store').default || require('electron-store');
 const { ipcMain, shell } = require('electron');
+const { makeProxyRequest } = require('./jwtService');
 
-// Base URLs for Real-Debrid API
+// Cloud function URL for Real-Debrid proxy
+const REAL_DEBRID_PROXY_URL = 'https://us-central1-gamemanagerproxy.cloudfunctions.net/realDebridProxy';
+
+// Base URLs for Real-Debrid API (kept for OAuth endpoints that don't go through proxy)
 const BASE_URL = 'https://api.real-debrid.com/rest/1.0';
 const OAUTH_URL = 'https://api.real-debrid.com/oauth/v2';
 
@@ -278,7 +282,7 @@ function disconnect() {
   return { success: true };
 }
 
-// Create an authenticated API client for making requests to Real-Debrid
+// Create an authenticated API client for making requests to Real-Debrid through proxy
 function createApiClient() {
   return {
     async get(endpoint, options = {}) {
@@ -289,13 +293,24 @@ function createApiClient() {
       
       const accessToken = store.get('accessToken');
       
-      return axios.get(`${BASE_URL}${endpoint}`, {
-        ...options,
+      const response = await makeProxyRequest(REAL_DEBRID_PROXY_URL, {
+        method: 'POST',
         headers: {
-          ...options.headers,
-          Authorization: `Bearer ${accessToken}`
+          'Content-Type': 'application/json'
+        },
+        data: {
+          apiToken: accessToken,
+          endpoint: endpoint,
+          method: 'GET'
         }
       });
+      
+      // Extract data from proxy response and format it like axios response
+      return {
+        data: response.data.data,
+        status: 200,
+        statusText: 'OK'
+      };
     },
     
     async post(endpoint, data, options = {}) {
@@ -306,19 +321,39 @@ function createApiClient() {
       
       const accessToken = store.get('accessToken');
       
-      // Default to JSON content type, but allow override from options
-      const defaultHeaders = {
-        'Content-Type': 'application/json'
-      };
+      // Handle form data for specific endpoints
+      let requestBody = data;
+      let contentType = undefined;
       
-      return axios.post(`${BASE_URL}${endpoint}`, data, {
-        ...options,
+      if (options.headers && options.headers['Content-Type'] === 'application/x-www-form-urlencoded') {
+        contentType = 'application/x-www-form-urlencoded';
+        // For form data, we need to parse it back to an object for the proxy
+        if (typeof data === 'string') {
+          const params = new URLSearchParams(data);
+          requestBody = Object.fromEntries(params);
+        }
+      }
+      
+      const response = await makeProxyRequest(REAL_DEBRID_PROXY_URL, {
+        method: 'POST',
         headers: {
-          ...defaultHeaders,
-          ...options.headers, // This allows overriding Content-Type
-          Authorization: `Bearer ${accessToken}`
+          'Content-Type': 'application/json'
+        },
+        data: {
+          apiToken: accessToken,
+          endpoint: endpoint,
+          method: 'POST',
+          body: requestBody,
+          contentType: contentType
         }
       });
+      
+      // Extract data from proxy response and format it like axios response
+      return {
+        data: response.data.data,
+        status: 200,
+        statusText: 'OK'
+      };
     },
     
     async put(endpoint, data, options = {}) {
@@ -329,13 +364,25 @@ function createApiClient() {
       
       const accessToken = store.get('accessToken');
       
-      return axios.put(`${BASE_URL}${endpoint}`, data, {
-        ...options,
+      const response = await makeProxyRequest(REAL_DEBRID_PROXY_URL, {
+        method: 'POST',
         headers: {
-          ...options.headers,
-          Authorization: `Bearer ${accessToken}`
+          'Content-Type': 'application/json'
+        },
+        data: {
+          apiToken: accessToken,
+          endpoint: endpoint,
+          method: 'PUT',
+          body: data
         }
       });
+      
+      // Extract data from proxy response and format it like axios response
+      return {
+        data: response.data.data,
+        status: 200,
+        statusText: 'OK'
+      };
     },
     
     async delete(endpoint, options = {}) {
@@ -346,13 +393,24 @@ function createApiClient() {
       
       const accessToken = store.get('accessToken');
       
-      return axios.delete(`${BASE_URL}${endpoint}`, {
-        ...options,
+      const response = await makeProxyRequest(REAL_DEBRID_PROXY_URL, {
+        method: 'POST',
         headers: {
-          ...options.headers,
-          Authorization: `Bearer ${accessToken}`
+          'Content-Type': 'application/json'
+        },
+        data: {
+          apiToken: accessToken,
+          endpoint: endpoint,
+          method: 'DELETE'
         }
       });
+      
+      // Extract data from proxy response and format it like axios response
+      return {
+        data: response.data.data,
+        status: 200,
+        statusText: 'OK'
+      };
     }
   };
 }
