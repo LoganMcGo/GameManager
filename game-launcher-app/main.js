@@ -53,7 +53,16 @@ function createWindow() {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': ['default-src \'self\' \'unsafe-inline\' \'unsafe-eval\' data: https:']
+        'Content-Security-Policy': [
+          "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: https:; " +
+          "media-src 'self' blob: data: https: https://*.youtube.com https://*.googlevideo.com; " +
+          "frame-src 'self' https: https://*.youtube.com https://youtube.com; " +
+          "img-src 'self' data: https: blob: https://*.ytimg.com https://*.youtube.com; " +
+          "connect-src 'self' https: wss: blob:; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: https://*.youtube.com; " +
+          "style-src 'self' 'unsafe-inline' https:; " +
+          "object-src 'none';"
+        ]
       }
     });
   });

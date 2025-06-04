@@ -8,8 +8,8 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
   const [selectedMedia, setSelectedMedia] = useState(0);
   const [isPlayingVideo, setIsPlayingVideo] = useState(false);
   const [autoRotate, setAutoRotate] = useState(true);
-  const [userHasInteracted, setUserHasInteracted] = useState(false);
   const [videoMuted, setVideoMuted] = useState(true);
+  const [imageOpacity, setImageOpacity] = useState(1);
 
   if (!game) return null;
 
@@ -27,23 +27,6 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
     }, 100);
   };
 
-  // Track user interaction for autoplay permissions
-  useEffect(() => {
-    const handleUserInteraction = () => {
-      setUserHasInteracted(true);
-      document.removeEventListener('click', handleUserInteraction);
-      document.removeEventListener('keydown', handleUserInteraction);
-    };
-
-    document.addEventListener('click', handleUserInteraction);
-    document.addEventListener('keydown', handleUserInteraction);
-
-    return () => {
-      document.removeEventListener('click', handleUserInteraction);
-      document.removeEventListener('keydown', handleUserInteraction);
-    };
-  }, []);
-
   // Combine screenshots and videos into media array - videos first
   const mediaItems = [];
   
@@ -56,10 +39,7 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
       mediaItems.push({
         type: 'video',
         url: `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&${baseParams}`,
-        mutedUrl: `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&${baseParams}`,
         unmutedUrl: `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=0&${baseParams}`,
-        manualUrl: `https://www.youtube.com/embed/${videoId}?autoplay=0&mute=0&${baseParams}`,
-        fallbackUrl: `https://www.youtube.com/watch?v=${videoId}`,
         thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
         id: `video-${index}`,
         videoId: videoId
@@ -93,8 +73,17 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
     }
 
     const timeout = setTimeout(() => {
-      setSelectedMedia(prev => (prev + 1) % mediaItems.length);
-      setIsPlayingVideo(false);
+      if (currentMediaItem?.type === 'image') {
+        setImageOpacity(0);
+        setTimeout(() => {
+          setSelectedMedia(prev => (prev + 1) % mediaItems.length);
+          setIsPlayingVideo(false);
+          setImageOpacity(1);
+        }, 300);
+      } else {
+        setSelectedMedia(prev => (prev + 1) % mediaItems.length);
+        setIsPlayingVideo(false);
+      }
     }, rotationDelay);
 
     return () => clearTimeout(timeout);
@@ -105,14 +94,11 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
     if (mediaItems[selectedMedia]?.type === 'video' && !isPlayingVideo) {
       const timeout = setTimeout(() => {
         setIsPlayingVideo(true);
-        if (userHasInteracted && videoMuted) {
-          setTimeout(() => setVideoMuted(false), 1000);
-        }
       }, 3000);
 
       return () => clearTimeout(timeout);
     }
-  }, [selectedMedia, mediaItems, isPlayingVideo, userHasInteracted, videoMuted]);
+  }, [selectedMedia, mediaItems, isPlayingVideo]);
 
   const tabs = [
     { id: 'overview', label: 'Overview' },
@@ -166,20 +152,14 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
               {currentMedia ? (
                 currentMedia.type === 'video' && isPlayingVideo ? (
                   <iframe
-                    src={
-                      currentMedia?.mutedUrl && currentMedia?.unmutedUrl
-                        ? (userHasInteracted 
-                            ? (videoMuted ? currentMedia.mutedUrl : currentMedia.unmutedUrl)
-                            : currentMedia.mutedUrl)
-                        : (currentMedia?.url || `https://www.youtube.com/embed/${currentMedia?.videoId || ''}`)
-                    }
+                    src={videoMuted ? currentMedia.url : currentMedia.unmutedUrl}
                     className="w-full h-full"
                     frameBorder="0"
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                     allowFullScreen
                     title={`${game.name} video`}
                     loading="lazy"
-                    key={`${currentMedia?.id || 'video'}-${userHasInteracted}-${videoMuted}`}
+                    key={`${currentMedia.id}-${videoMuted}`}
                   />
                 ) : (
                   currentMedia?.type === 'image' || game?.imageType === 'portrait' || (currentMedia?.url && currentMedia.url.includes('cover')) ? (
@@ -187,20 +167,25 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                       <img
                         src={currentMedia?.type === 'image' ? currentMedia.url : currentMedia?.thumbnail}
                         alt=""
-                        className="absolute inset-0 w-full h-full object-cover scale-110 blur-md transition-transform duration-700"
-                        style={{ filter: 'blur(8px) brightness(0.4)' }}
+                        className="absolute inset-0 w-full h-full object-cover scale-110 blur-md transition-all duration-300"
+                        style={{ 
+                          filter: 'blur(8px) brightness(0.4)',
+                          opacity: currentMedia?.type === 'image' ? imageOpacity : 1
+                        }}
                       />
                       <img
                         src={currentMedia?.type === 'image' ? currentMedia.url : currentMedia?.thumbnail}
                         alt={game.name}
-                        className="relative z-10 w-full h-full object-contain"
+                        className="relative z-10 w-full h-full object-contain transition-opacity duration-300"
+                        style={{ opacity: currentMedia?.type === 'image' ? imageOpacity : 1 }}
                       />
                     </>
                   ) : (
                     <img 
                       src={currentMedia?.type === 'image' ? currentMedia.url : currentMedia?.thumbnail}
                       alt={game.name} 
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-cover transition-opacity duration-300"
+                      style={{ opacity: currentMedia?.type === 'image' ? imageOpacity : 1 }}
                     />
                   )
                 )
@@ -210,20 +195,20 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                     <img
                       src={heroImage}
                       alt=""
-                      className="absolute inset-0 w-full h-full object-cover scale-110 blur-md transition-transform duration-700"
+                      className="absolute inset-0 w-full h-full object-cover scale-110 blur-md transition-all duration-500"
                       style={{ filter: 'blur(8px) brightness(0.4)' }}
                     />
                     <img
                       src={heroImage}
                       alt={game.name}
-                      className="relative z-10 w-full h-full object-contain"
+                      className="relative z-10 w-full h-full object-contain transition-opacity duration-500"
                     />
                   </>
                 ) : (
                   <img 
                     src={heroImage} 
                     alt={game.name} 
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover transition-opacity duration-500"
                   />
                 )
               ) : (
@@ -289,28 +274,23 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                           <button
                             onClick={() => {
                               setIsPlayingVideo(!isPlayingVideo);
-                              if (!userHasInteracted) {
-                                setUserHasInteracted(true);
-                              }
                             }}
                             className="px-3 py-1 bg-gray-700 text-gray-300 hover:bg-gray-600 rounded text-xs font-medium transition-colors"
                           >
                             {isPlayingVideo ? 'Show Thumbnail' : 'Play Video'}
                           </button>
-                          {isPlayingVideo && (
-                            <button
-                              onClick={() => setVideoMuted(!videoMuted)}
-                              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                                videoMuted 
-                                  ? 'bg-yellow-600 text-white hover:bg-yellow-700' 
-                                  : 'bg-green-600 text-white hover:bg-green-700'
-                              }`}
-                            >
-                              {videoMuted ? '🔇 Muted' : '🔊 Sound'}
-                            </button>
-                          )}
                           <button
-                            onClick={() => window.open(currentMedia.fallbackUrl, '_blank')}
+                            onClick={() => setVideoMuted(!videoMuted)}
+                            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                              videoMuted 
+                                ? 'bg-yellow-600 text-white hover:bg-yellow-700' 
+                                : 'bg-green-600 text-white hover:bg-green-700'
+                            }`}
+                          >
+                            {videoMuted ? '🔇 Muted' : '🔊 Sound'}
+                          </button>
+                          <button
+                            onClick={() => window.open(`https://www.youtube.com/watch?v=${currentMedia.videoId}`)}
                             className="px-3 py-1 bg-red-600 text-white hover:bg-red-700 rounded text-xs font-medium transition-colors"
                           >
                             YouTube ↗
@@ -321,11 +301,6 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                   </div>
                   <div className="text-xs text-gray-400">
                     {selectedMedia + 1} of {mediaItems.length}
-                    {currentMedia?.type === 'video' && !userHasInteracted && (
-                      <div className="text-yellow-400 mt-1">
-                        ⚠️ Click anywhere to enable sound
-                      </div>
-                    )}
                   </div>
                 </div>
                 
@@ -335,9 +310,17 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                     <button
                       key={media.id}
                       onClick={() => {
-                        setSelectedMedia(index);
-                        setIsPlayingVideo(false);
-                        setAutoRotate(false);
+                        if (mediaItems[index]?.type === 'image') {
+                          setImageOpacity(0);
+                          setTimeout(() => {
+                            setSelectedMedia(index);
+                            setIsPlayingVideo(false);
+                            setImageOpacity(1);
+                          }, 300);
+                        } else {
+                          setSelectedMedia(index);
+                          setIsPlayingVideo(false);
+                        }
                       }}
                       className={`relative flex-shrink-0 w-16 h-12 rounded overflow-hidden transition-all ${
                         selectedMedia === index 
