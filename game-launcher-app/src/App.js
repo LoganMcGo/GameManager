@@ -9,15 +9,24 @@ import GameDetailView from './components/GameDetailView';
 import RealDebridManager from './components/RealDebridManager';
 import Library from './components/Library';
 import DownloadProgress from './components/DownloadProgress';
+import NotificationContainer from './components/NotificationContainer';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { IgdbProvider, useIgdb } from './context/IgdbContext';
 import { LibraryProvider, useLibrary } from './context/LibraryContext';
+import { NotificationProvider } from './context/NotificationContext';
+import { useNotifications } from './context/NotificationContext';
+import { useAutoUpdater } from './hooks/useAutoUpdater';
 
 // Main App content
 function AppContent() {
   const { isLoading, firstLaunch, setFirstLaunch } = useAuth();
   const { fetchGameDetails } = useIgdb();
   const { addToRecentlyViewed } = useLibrary();
+  const { notifyError, notifyWarning } = useNotifications();
+  
+  // Initialize auto-updater here where it has access to notifications
+  useAutoUpdater();
+  
   const [currentPage, setCurrentPage] = useState('home'); // 'home', 'library', 'settings', 'downloads', 'category/action', etc.
   const [selectedGame, setSelectedGame] = useState(null);
   const [gameDetails, setGameDetails] = useState(null);
@@ -45,11 +54,17 @@ function AppContent() {
       } else {
         // Fallback to basic game info if detailed fetch fails
         setGameDetails(game);
+        notifyWarning('Could not load detailed game information', {
+          subtitle: 'Showing basic game details instead'
+        });
       }
     } catch (error) {
       console.error('Error fetching game details:', error);
       // Fallback to basic game info
       setGameDetails(game);
+      notifyError('Failed to load game details', {
+        subtitle: error.message || 'Please try again later'
+      });
     } finally {
       setIsLoadingGameDetails(false);
     }
@@ -63,22 +78,43 @@ function AppContent() {
     setCurrentPage('home');
   };
 
-  // Window control handlers
+  // Window control handlers with error handling
   const handleMinimize = () => {
-    if (window.api && window.api.window) {
-      window.api.window.minimize();
+    try {
+      if (window.api && window.api.window) {
+        window.api.window.minimize();
+      }
+    } catch (error) {
+      console.error('Error minimizing window:', error);
+      notifyError('Failed to minimize window', {
+        subtitle: 'Window controls may not be available'
+      });
     }
   };
 
   const handleMaximize = () => {
-    if (window.api && window.api.window) {
-      window.api.window.maximize();
+    try {
+      if (window.api && window.api.window) {
+        window.api.window.maximize();
+      }
+    } catch (error) {
+      console.error('Error maximizing window:', error);
+      notifyError('Failed to maximize window', {
+        subtitle: 'Window controls may not be available'
+      });
     }
   };
 
   const handleClose = () => {
-    if (window.api && window.api.window) {
-      window.api.window.close();
+    try {
+      if (window.api && window.api.window) {
+        window.api.window.close();
+      }
+    } catch (error) {
+      console.error('Error closing window:', error);
+      notifyError('Failed to close window', {
+        subtitle: 'Please try using Alt+F4 or the system close button'
+      });
     }
   };
 
@@ -165,6 +201,9 @@ function AppContent() {
 
       {/* Global Download Progress Component */}
       <DownloadProgress />
+
+      {/* Global Notification Container */}
+      <NotificationContainer />
     </div>
   );
 }
@@ -175,7 +214,9 @@ function App() {
     <AuthProvider>
       <IgdbProvider>
         <LibraryProvider>
-          <AppContent />
+          <NotificationProvider>
+            <AppContent />
+          </NotificationProvider>
         </LibraryProvider>
       </IgdbProvider>
     </AuthProvider>

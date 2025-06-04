@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { useLibrary } from '../context/LibraryContext';
-import gameDownloadService from '../services/gameDownloadService';
+import { useNotifications } from '../context/NotificationContext';
+import { createNotificationHandlers } from '../services/notificationService';
+import gameFinderService from '../services/gameFinderService';
 
 // Game card component for displaying game information
 function GameCard({ game, size = 'small', onClick }) {
   const { addToLibrary, isInLibrary, toggleFavorite, isFavorited } = useLibrary();
-  const [downloadStatus, setDownloadStatus] = useState(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const notifications = createNotificationHandlers(useNotifications);
   
   // Determine if the game has an image URL
   const hasImage = game.imageUrl && game.imageUrl !== '';
@@ -26,38 +29,40 @@ function GameCard({ game, size = 'small', onClick }) {
   const handleGameDownload = async (e) => {
     e.stopPropagation(); // Prevent triggering the card click
     
-    setDownloadStatus({ status: 'downloading', message: 'Searching for torrents...' });
-
-    try {
-      const result = await gameDownloadService.downloadGame(game.name);
-      
-      if (result.success) {
-        setDownloadStatus({ 
-          status: 'success', 
-          message: '✅ Added to Real-Debrid!',
-          torrent: result.torrent 
-        });
-        
-        // Clear success message after 3 seconds
-        setTimeout(() => {
-          setDownloadStatus(null);
-        }, 3000);
-      } else {
-        setDownloadStatus({ status: 'error', message: `❌ ${result.error}` });
-        
-        // Clear error message after 5 seconds
-        setTimeout(() => {
-          setDownloadStatus(null);
-        }, 5000);
-      }
-    } catch (error) {
-      setDownloadStatus({ status: 'error', message: `❌ Download failed: ${error.message}` });
-      
-      // Clear error message after 5 seconds
-      setTimeout(() => {
-        setDownloadStatus(null);
-      }, 5000);
+    if (isDownloading) {
+      notifications.notifyWarning('Download already in progress', {
+        subtitle: `${game.name} is already being downloaded`
+      });
+      return;
     }
+    
+    setIsDownloading(true);
+
+    await notifications.withDownloadNotifications(
+      async ({ onProgress }) => {
+        onProgress(0, 'Searching for torrents...');
+        
+        const result = await gameFinderService.downloadGame(game.name);
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Download failed');
+        }
+        
+        onProgress(50, 'Found torrent, adding to Real-Debrid...');
+        
+        // Give time for the progress to show
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        onProgress(100, 'Added to Real-Debrid successfully!');
+        
+        return result;
+      },
+      {
+        downloadName: game.name,
+        onSuccess: () => setIsDownloading(false),
+        onError: () => setIsDownloading(false)
+      }
+    );
   };
   
   const gameInLibrary = isInLibrary(game.appId);
@@ -91,17 +96,9 @@ function GameCard({ game, size = 'small', onClick }) {
               </button>
 
               {/* Download button */}
-              {downloadStatus ? (
+              {isDownloading ? (
                 <div className="p-1 rounded-full bg-black bg-opacity-75">
-                  {downloadStatus.status === 'downloading' && (
-                    <div className="animate-spin rounded-full h-3 w-3 border-t-2 border-b-2 border-blue-400"></div>
-                  )}
-                  {downloadStatus.status === 'success' && (
-                    <div className="text-green-400 text-xs">✅</div>
-                  )}
-                  {downloadStatus.status === 'error' && (
-                    <div className="text-red-400 text-xs">❌</div>
-                  )}
+                  <div className="animate-spin rounded-full h-3 w-3 border-t-2 border-b-2 border-blue-400"></div>
                 </div>
               ) : (
                 <button
@@ -136,17 +133,9 @@ function GameCard({ game, size = 'small', onClick }) {
               </button>
 
               {/* Download button */}
-              {downloadStatus ? (
+              {isDownloading ? (
                 <div className="p-1 rounded-full bg-gray-700">
-                  {downloadStatus.status === 'downloading' && (
-                    <div className="animate-spin rounded-full h-3 w-3 border-t-2 border-b-2 border-blue-400"></div>
-                  )}
-                  {downloadStatus.status === 'success' && (
-                    <div className="text-green-400 text-xs">✅</div>
-                  )}
-                  {downloadStatus.status === 'error' && (
-                    <div className="text-red-400 text-xs">❌</div>
-                  )}
+                  <div className="animate-spin rounded-full h-3 w-3 border-t-2 border-b-2 border-blue-400"></div>
                 </div>
               ) : (
                 <button
@@ -203,17 +192,9 @@ function GameCard({ game, size = 'small', onClick }) {
             </button>
 
             {/* Download button */}
-            {downloadStatus ? (
+            {isDownloading ? (
               <div className="p-1.5 rounded-full bg-black bg-opacity-75 flex items-center justify-center">
-                {downloadStatus.status === 'downloading' && (
-                  <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-400"></div>
-                )}
-                {downloadStatus.status === 'success' && (
-                  <div className="text-green-400">✅</div>
-                )}
-                {downloadStatus.status === 'error' && (
-                  <div className="text-red-400">❌</div>
-                )}
+                <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-400"></div>
               </div>
             ) : (
               <button
@@ -303,17 +284,9 @@ function GameCard({ game, size = 'small', onClick }) {
           </button>
 
           {/* Download button */}
-          {downloadStatus ? (
+          {isDownloading ? (
             <div className="p-2 rounded-full bg-black bg-opacity-75 flex items-center justify-center">
-              {downloadStatus.status === 'downloading' && (
-                <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-blue-400"></div>
-              )}
-              {downloadStatus.status === 'success' && (
-                <div className="text-green-400 text-lg">✅</div>
-              )}
-              {downloadStatus.status === 'error' && (
-                <div className="text-red-400 text-lg">❌</div>
-              )}
+              <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-blue-400"></div>
             </div>
           ) : (
             <button
@@ -346,26 +319,12 @@ function GameCard({ game, size = 'small', onClick }) {
           </button>
 
           {/* Download button for large cards */}
-          {downloadStatus ? (
+          {isDownloading ? (
             <div className="px-4 py-2 rounded bg-gray-700 flex items-center justify-center min-w-[100px]">
-              {downloadStatus.status === 'downloading' && (
-                <div className="flex items-center space-x-2">
-                  <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-400"></div>
-                  <span className="text-xs text-blue-400">Downloading</span>
-                </div>
-              )}
-              {downloadStatus.status === 'success' && (
-                <div className="flex items-center space-x-1">
-                  <span className="text-green-400">✅</span>
-                  <span className="text-xs text-green-400">Added!</span>
-                </div>
-              )}
-              {downloadStatus.status === 'error' && (
-                <div className="flex items-center space-x-1">
-                  <span className="text-red-400">❌</span>
-                  <span className="text-xs text-red-400">Failed</span>
-                </div>
-              )}
+              <div className="flex items-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-400"></div>
+                <span className="text-xs text-blue-400">Downloading</span>
+              </div>
             </div>
           ) : (
             <button

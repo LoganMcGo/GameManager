@@ -50,14 +50,14 @@ if (!envContent.includes('AUTO_DOWNLOAD_ENABLED')) {
 // Create a simple test script
 const testScript = `
 // Test the download service
-import gameDownloadService from './src/services/gameDownloadService.js';
+import gameFinderService from './src/services/gameFinderService.js';
 
 async function testDownload() {
   console.log('🧪 Testing download service...');
   
   try {
     // Test search functionality
-    const result = await gameDownloadService.downloadGame('Cyberpunk 2077', {
+    const result = await gameFinderService.downloadGame('Cyberpunk 2077', {
       minSeeders: 1,
       maxSizeGB: 50
     });
@@ -88,7 +88,7 @@ console.log('\n🚀 Setup complete! Here\'s what you need to know:\n');
 console.log('📁 FILES CREATED:');
 console.log('  ✓ .env - Configuration file');
 console.log('  ✓ test-download.js - Test script');
-console.log('  ✓ src/services/gameDownloadService.js - Download service');
+console.log('  ✓ src/services/gameFinderService.js - Download service');
 
 console.log('\n🔧 HOW IT WORKS:');
 console.log('  1. Uses public torrent APIs (no setup needed)');

@@ -1,21 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import gameDownloadService from '../services/gameDownloadService';
+import { useNotifications } from '../context/NotificationContext';
+import { createNotificationHandlers } from '../services/notificationService';
+import gameFinderService from '../services/gameFinderService';
+import { useAutoUpdater } from '../hooks/useAutoUpdater';
 
 function SettingsPage({ onGameSelect }) {
   const { isAuthenticated, userInfo, startAuthFlow, checkAuthFlowStatus, disconnect } = useAuth();
+  const notifications = createNotificationHandlers(useNotifications);
   const [isConnecting, setIsConnecting] = useState(false);
   const [authFlow, setAuthFlow] = useState(null);
-  const [error, setError] = useState(null);
   const [currentPollInterval, setCurrentPollInterval] = useState(8); // Track current polling interval in seconds
 
   // IGDB cloud proxy status state
   const [igdbStatus, setIgdbStatus] = useState({ connected: false, message: 'Not tested' });
-  const [igdbError, setIgdbError] = useState(null);
   const [isTestingIgdb, setIsTestingIgdb] = useState(false);
 
   // Real-Debrid cloud proxy status state
-  const [realDebridProxyError, setRealDebridProxyError] = useState(null);
   const [isTestingRealDebridProxy, setIsTestingRealDebridProxy] = useState(false);
 
   // Jackett settings state
@@ -25,20 +26,17 @@ function SettingsPage({ onGameSelect }) {
   const [jackettStatus, setJackettStatus] = useState(null);
   const [isTestingJackett, setIsTestingJackett] = useState(false);
   const [isSavingJackett, setIsSavingJackett] = useState(false);
-  const [jackettError, setJackettError] = useState(null);
-  const [jackettSuccess, setJackettSuccess] = useState(null);
 
   // Provider settings state
   const [providerSettings, setProviderSettings] = useState({});
-  const [providerError, setProviderError] = useState(null);
-  const [providerSuccess, setProviderSuccess] = useState(null);
   const [isSavingProviders, setIsSavingProviders] = useState(false);
 
   // Download location settings state
   const [downloadLocation, setDownloadLocation] = useState('');
-  const [downloadLocationError, setDownloadLocationError] = useState(null);
-  const [downloadLocationSuccess, setDownloadLocationSuccess] = useState(null);
   const [isSavingDownloadLocation, setIsSavingDownloadLocation] = useState(false);
+
+  // Auto-updater
+  const { checkForUpdates, currentVersion } = useAutoUpdater();
 
   // Load settings on component mount
   useEffect(() => {
@@ -51,74 +49,94 @@ function SettingsPage({ onGameSelect }) {
   // Load download location settings
   const loadDownloadLocationSettings = () => {
     try {
-      const location = gameDownloadService.getDownloadLocation();
+      const location = gameFinderService.getDownloadLocation();
       setDownloadLocation(location || '');
     } catch (error) {
-      console.error('Error loading download location settings:', error);
+      notifications.handleError(error, 'loading download location settings');
     }
   };
 
   // Browse for download folder
   const handleBrowseDownloadLocation = async () => {
-    try {
-      if (window.api?.selectFolder) {
-        const result = await window.api.selectFolder();
-        if (result && !result.canceled && result.filePaths.length > 0) {
-          setDownloadLocation(result.filePaths[0]);
-        }
-      } else {
-        // Fallback for web version - show file input
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.webkitdirectory = true;
-        input.onchange = (e) => {
-          if (e.target.files.length > 0) {
-            const path = e.target.files[0].webkitRelativePath.split('/')[0];
-            setDownloadLocation(path);
+    await notifications.withNotifications(
+      async () => {
+        if (window.api?.selectFolder) {
+          const result = await window.api.selectFolder();
+          if (result && !result.canceled && result.filePaths.length > 0) {
+            setDownloadLocation(result.filePaths[0]);
           }
-        };
-        input.click();
+        } else {
+          // Fallback for web version - show file input
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.webkitdirectory = true;
+          input.onchange = (e) => {
+            if (e.target.files.length > 0) {
+              const file = e.target.files[0];
+              const relativePath = file.webkitRelativePath;
+              
+              const pathParts = relativePath.split('/');
+              if (pathParts.length > 1) {
+                const folderName = pathParts[0];
+                setDownloadLocation(folderName);
+                notifications.notifyWarning('Web version limitation', {
+                  subtitle: 'Only folder name saved. Full path may not work correctly.'
+                });
+              } else {
+                throw new Error('Unable to determine folder path from selected files');
+              }
+            }
+          };
+          input.click();
+        }
+      },
+      {
+        errorMessage: {
+          title: 'Failed to browse folder',
+          subtitle: 'Could not access folder selection dialog'
+        }
       }
-    } catch (error) {
-      console.error('Error browsing for download location:', error);
-      setDownloadLocationError('Failed to browse for folder');
-    }
+    );
   };
 
   // Save download location settings
   const handleSaveDownloadLocation = async () => {
     if (!downloadLocation.trim()) {
-      setDownloadLocationError('Download location is required');
+      notifications.notifyError('Download location required', {
+        subtitle: 'Please select a valid download folder'
+      });
       return;
     }
 
     setIsSavingDownloadLocation(true);
-    setDownloadLocationError(null);
-    setDownloadLocationSuccess(null);
 
-    try {
-      await gameDownloadService.setDownloadLocation(downloadLocation);
-      setIsSavingDownloadLocation(false);
-      setDownloadLocationSuccess('Download location saved successfully!');
-      
-      // Clear success message after 3 seconds
-      setTimeout(() => {
-        setDownloadLocationSuccess(null);
-      }, 3000);
-    } catch (error) {
-      console.error('Error saving download location:', error);
-      setDownloadLocationError('Failed to save download location');
-      setIsSavingDownloadLocation(false);
-    }
+    await notifications.withNotifications(
+      async () => {
+        await gameFinderService.setDownloadLocation(downloadLocation);
+      },
+      {
+        showSuccess: true,
+        successMessage: {
+          title: 'Download location saved',
+          subtitle: 'Downloads will be saved to the selected folder'
+        },
+        errorMessage: {
+          title: 'Failed to save download location',
+          subtitle: 'Please check folder permissions and try again'
+        },
+        onSuccess: () => setIsSavingDownloadLocation(false),
+        onError: () => setIsSavingDownloadLocation(false)
+      }
+    );
   };
 
-  // Load provider settings from gameDownloadService
+  // Load provider settings from gameFinderService
   const loadProviderSettings = () => {
     try {
-      const settings = gameDownloadService.getProviderSettings();
+      const settings = gameFinderService.getProviderSettings();
       setProviderSettings(settings);
     } catch (error) {
-      console.error('Error loading provider settings:', error);
+      notifications.handleError(error, 'loading provider settings');
     }
   };
 
@@ -134,127 +152,84 @@ function SettingsPage({ onGameSelect }) {
   };
 
   // Save provider settings
-  const handleSaveProviders = () => {
+  const handleSaveProviders = async () => {
     setIsSavingProviders(true);
-    setProviderError(null);
-    setProviderSuccess(null);
 
-    try {
-      gameDownloadService.configureProviders(providerSettings);
-      setIsSavingProviders(false);
-      setProviderSuccess('Provider settings saved successfully!');
-      
-      // Clear success message after 3 seconds
-      setTimeout(() => {
-        setProviderSuccess(null);
-      }, 3000);
-    } catch (error) {
-      console.error('Error saving provider settings:', error);
-      setProviderError('Failed to save provider settings');
-      setIsSavingProviders(false);
-    }
+    await notifications.withNotifications(
+      async () => {
+        gameFinderService.configureProviders(providerSettings);
+      },
+      {
+        showSuccess: true,
+        successMessage: {
+          title: 'Provider settings saved',
+          subtitle: 'Download provider configuration updated'
+        },
+        errorMessage: {
+          title: 'Failed to save provider settings',
+          subtitle: 'Please check your configuration and try again'
+        },
+        onSuccess: () => setIsSavingProviders(false),
+        onError: () => setIsSavingProviders(false)
+      }
+    );
   };
 
-  // Load Jackett settings from gameDownloadService
+  // Load Jackett settings from gameFinderService
   const loadJackettSettings = async () => {
     try {
-      const settings = gameDownloadService.loadJackettSettings();
+      const settings = gameFinderService.loadJackettSettings();
       setJackettEnabled(settings.enabled || false);
       setJackettUrl(settings.url || 'http://localhost:9117');
       setJackettApiKey(settings.apiKey || '');
       
       // Check status if enabled
       if (settings.enabled && settings.apiKey) {
-        const status = await gameDownloadService.getJackettStatus();
+        const status = await gameFinderService.getJackettStatus();
         setJackettStatus(status);
       }
     } catch (error) {
-      console.error('Error loading Jackett settings:', error);
+      notifications.handleError(error, 'loading Jackett settings');
     }
   };
 
   // Test Jackett connection
   const handleTestJackett = async () => {
     if (!jackettUrl.trim() || !jackettApiKey.trim()) {
-      setJackettError('Both URL and API Key are required');
+      notifications.notifyError('Jackett configuration incomplete', {
+        subtitle: 'Both URL and API Key are required'
+      });
       return;
     }
 
     setIsTestingJackett(true);
-    setJackettError(null);
-    setJackettSuccess(null);
 
-    try {
-      // Configure temporarily for testing
-      const testConfig = {
-        enabled: true,
-        url: jackettUrl,
-        apiKey: jackettApiKey
-      };
-      
-      gameDownloadService.configureJackett(testConfig);
-      const status = await gameDownloadService.getJackettStatus();
-      
-      setJackettStatus(status);
-      setIsTestingJackett(false);
-
-      if (status.connected) {
-        setJackettSuccess('Jackett connection successful!');
-      } else {
-        setJackettError(status.message || 'Failed to connect to Jackett');
-      }
-    } catch (error) {
-      console.error('Error testing Jackett:', error);
-      setJackettError('Failed to test Jackett connection');
-      setIsTestingJackett(false);
-    }
-  };
-
-  // Save Jackett settings
-  const handleSaveJackett = async () => {
-    if (!jackettUrl.trim()) {
-      setJackettError('Jackett URL is required');
-      return;
-    }
-
-    if (jackettEnabled && !jackettApiKey.trim()) {
-      setJackettError('API Key is required when Jackett is enabled');
-      return;
-    }
-
-    setIsSavingJackett(true);
-    setJackettError(null);
-    setJackettSuccess(null);
-
-    try {
-      const settings = {
-        enabled: jackettEnabled,
-        url: jackettUrl,
-        apiKey: jackettApiKey
-      };
-      
-      gameDownloadService.configureJackett(settings);
-      
-      // Test connection if enabled
-      if (jackettEnabled && jackettApiKey) {
-        const status = await gameDownloadService.getJackettStatus();
+    await notifications.withNotifications(
+      async () => {
+        const status = await gameFinderService.testJackettConnection(jackettUrl, jackettApiKey);
         setJackettStatus(status);
+        return status;
+      },
+      {
+        showSuccess: true,
+        successMessage: {
+          title: 'Jackett connection successful',
+          subtitle: 'Connection to Jackett server verified'
+        },
+        errorMessage: {
+          title: 'Jackett connection failed',
+          subtitle: 'Please check your URL and API key'
+        },
+        onSuccess: () => setIsTestingJackett(false),
+        onError: () => setIsTestingJackett(false)
       }
-      
-      setIsSavingJackett(false);
-      setJackettSuccess('Jackett settings saved successfully!');
-    } catch (error) {
-      console.error('Error saving Jackett settings:', error);
-      setJackettError('Failed to save Jackett settings');
-      setIsSavingJackett(false);
-    }
+    );
   };
 
   // Start Real Debrid authentication flow
   const handleStartAuthFlow = async () => {
     setIsConnecting(true);
-    setError(null);
-    setRealDebridProxyError(null); // Clear any previous proxy errors
+    setAuthFlow(null);
     
     try {
       const authData = await startAuthFlow();
@@ -279,7 +254,6 @@ function SettingsPage({ onGameSelect }) {
               clearInterval(poll);
               setIsConnecting(false);
               setAuthFlow(null);
-              setRealDebridProxyError(null); // Clear any proxy errors on success
             } else if (status.status === 'error') {
               console.error('Authentication error:', status.message);
               clearInterval(poll);
@@ -288,21 +262,29 @@ function SettingsPage({ onGameSelect }) {
               
               // Check if it's a cloud proxy error
               if (status.message && (status.message.includes('proxy') || status.message.includes('cloud') || status.message.includes('fetch'))) {
-                setRealDebridProxyError(status.message);
+                notifications.notifyError('Authentication error', {
+                  subtitle: status.message
+                });
               } else {
-                setError(status.message || 'Authentication failed');
+                notifications.notifyError('Authentication failed', {
+                  subtitle: status.message || 'Authentication failed'
+                });
               }
             } else if (status.status === 'expired') {
               console.error('Authentication expired');
               clearInterval(poll);
               setIsConnecting(false);
               setAuthFlow(null);
-              setError('Authentication code expired. Please try again.');
+              notifications.notifyError('Authentication expired', {
+                subtitle: 'Please try again'
+              });
             } else if (status.status === 'rate_limited') {
               console.warn('Rate limited, backing off...');
               // Increase polling interval when rate limited
               clearInterval(poll);
-              setError('Rate limited. Waiting longer before next attempt...');
+              notifications.notifyWarning('Rate limited', {
+                subtitle: 'Waiting longer before next attempt'
+              });
               setTimeout(() => {
                 setError(null);
                 pollInterval = Math.min(pollInterval * 1.5, 30000); // Increase interval, max 30 seconds
@@ -331,9 +313,13 @@ function SettingsPage({ onGameSelect }) {
             
             // Check if it's a cloud proxy error
             if (err.message && (err.message.includes('proxy') || err.message.includes('cloud') || err.message.includes('fetch'))) {
-              setRealDebridProxyError(`Cloud proxy error during authentication: ${err.message}`);
+              notifications.notifyError('Authentication error', {
+                subtitle: err.message
+              });
             } else {
-              setError('Authentication failed');
+              notifications.notifyError('Authentication failed', {
+                subtitle: err.message || 'Authentication failed'
+              });
             }
           }
         }, pollInterval);
@@ -344,7 +330,9 @@ function SettingsPage({ onGameSelect }) {
           if (isConnecting) {
             setIsConnecting(false);
             setAuthFlow(null);
-            setError('Authentication code expired. Please try again.');
+            notifications.notifyError('Authentication expired', {
+              subtitle: 'Please try again'
+            });
           }
         }, 30 * 60 * 1000);
       };
@@ -357,9 +345,13 @@ function SettingsPage({ onGameSelect }) {
       
       // Check if it's a cloud proxy error
       if (err.message && (err.message.includes('proxy') || err.message.includes('cloud') || err.message.includes('fetch'))) {
-        setRealDebridProxyError(`Failed to start authentication via cloud proxy: ${err.message}`);
+        notifications.notifyError('Authentication error', {
+          subtitle: err.message
+        });
       } else {
-        setError('Failed to start authentication. Please try again.');
+        notifications.notifyError('Failed to start authentication', {
+          subtitle: err.message || 'Failed to start authentication. Please try again.'
+        });
       }
     }
   };
@@ -377,14 +369,15 @@ function SettingsPage({ onGameSelect }) {
       await disconnect();
     } catch (err) {
       console.error('Error disconnecting:', err);
-      setError('Failed to disconnect. Please try again.');
+      notifications.notifyError('Failed to disconnect', {
+        subtitle: 'Please try again'
+      });
     }
   };
 
   // Test IGDB cloud proxy connection
   const testIgdbConnection = async () => {
     setIsTestingIgdb(true);
-    setIgdbError(null);
     
     try {
       // Test by fetching a small number of popular games
@@ -400,13 +393,17 @@ function SettingsPage({ onGameSelect }) {
           connected: false, 
           message: 'Cloud proxy connection failed' 
         });
-        setIgdbError(`IGDB API Error: ${result.error}`);
+        notifications.notifyError('IGDB API Error', {
+          subtitle: result.error
+        });
       } else {
         setIgdbStatus({ 
           connected: false, 
           message: 'No data received from cloud proxy' 
         });
-        setIgdbError('Cloud proxy returned no data - this might indicate a configuration issue');
+        notifications.notifyWarning('Cloud proxy returned no data', {
+          subtitle: 'This might indicate a configuration issue'
+        });
       }
     } catch (error) {
       console.error('Error testing IGDB cloud proxy:', error);
@@ -414,7 +411,9 @@ function SettingsPage({ onGameSelect }) {
         connected: false, 
         message: 'Cloud proxy test failed' 
       });
-      setIgdbError(`Connection Error: ${error.message || 'Failed to connect to IGDB cloud proxy'}`);
+      notifications.notifyError('Connection Error', {
+        subtitle: error.message || 'Failed to connect to IGDB cloud proxy'
+      });
     } finally {
       setIsTestingIgdb(false);
     }
@@ -423,21 +422,25 @@ function SettingsPage({ onGameSelect }) {
   // Test Real-Debrid cloud proxy connection (basic connectivity test)
   const testRealDebridProxy = async () => {
     setIsTestingRealDebridProxy(true);
-    setRealDebridProxyError(null);
     
     try {
       // Test the proxy by attempting to get auth status (this should work even without tokens)
       const result = await window.api.realDebrid.getAuthStatus();
       
       if (result.success !== undefined) {
-        // If we got any response from the proxy, it's working
-        setRealDebridProxyError(null);
+        notifications.notifySuccess('Real-Debrid connection successful', {
+          subtitle: 'Real-Debrid cloud proxy is working'
+        });
       } else if (result.error) {
-        setRealDebridProxyError(`Real-Debrid API Error: ${result.error}`);
+        notifications.notifyError('Real-Debrid API Error', {
+          subtitle: result.error
+        });
       }
     } catch (error) {
       console.error('Error testing Real-Debrid cloud proxy:', error);
-      setRealDebridProxyError(`Cloud Proxy Error: ${error.message || 'Failed to connect to Real-Debrid cloud proxy'}`);
+      notifications.notifyError('Cloud Proxy Error', {
+        subtitle: error.message || 'Failed to connect to Real-Debrid cloud proxy'
+      });
     } finally {
       setIsTestingRealDebridProxy(false);
     }
@@ -451,29 +454,15 @@ function SettingsPage({ onGameSelect }) {
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">Real-Debrid Connection</h2>
           
-          {error && (
+          {notifications.error && (
             <div className="bg-red-900 text-white p-4 rounded-md mb-4">
               <div className="flex items-start">
                 <svg className="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                 </svg>
                 <div>
-                  <p className="font-medium">Authentication Error</p>
-                  <p className="text-sm mt-1">{error}</p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {realDebridProxyError && (
-            <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <div className="flex items-start">
-                <svg className="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>
-                <div>
-                  <p className="font-medium">Cloud Proxy Connection Error</p>
-                  <p className="text-sm mt-1">{realDebridProxyError}</p>
+                  <p className="font-medium">{notifications.error.title}</p>
+                  <p className="text-sm mt-1">{notifications.error.subtitle}</p>
                 </div>
               </div>
             </div>
@@ -632,18 +621,6 @@ function SettingsPage({ onGameSelect }) {
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">Download Location</h2>
           
-          {downloadLocationError && (
-            <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <p>{downloadLocationError}</p>
-            </div>
-          )}
-
-          {downloadLocationSuccess && (
-            <div className="bg-green-900 text-white p-4 rounded-md mb-4">
-              <p>{downloadLocationSuccess}</p>
-            </div>
-          )}
-
           <p className="text-gray-300 mb-4">
             Set the default location where Real-Debrid will download your games. This folder will be used for all game downloads.
           </p>
@@ -700,20 +677,6 @@ function SettingsPage({ onGameSelect }) {
         {/* IGDB Game Database Status */}
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">IGDB Game Database</h2>
-          
-          {igdbError && (
-            <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <div className="flex items-start">
-                <svg className="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>
-                <div>
-                  <p className="font-medium">Cloud Proxy Connection Error</p>
-                  <p className="text-sm mt-1">{igdbError}</p>
-                </div>
-              </div>
-            </div>
-          )}
           
           <div className="flex items-center mb-4">
             <div className={`w-6 h-6 rounded-full flex items-center justify-center mr-3 ${igdbStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}>
@@ -784,15 +747,15 @@ function SettingsPage({ onGameSelect }) {
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">Jackett Integration (Optional)</h2>
           
-          {jackettError && (
+          {notifications.error && (
             <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <p>{jackettError}</p>
+              <p>{notifications.error.title}</p>
             </div>
           )}
 
-          {jackettSuccess && (
+          {notifications.success && (
             <div className="bg-green-900 text-white p-4 rounded-md mb-4">
-              <p>{jackettSuccess}</p>
+              <p>{notifications.success.title}</p>
             </div>
           )}
 
@@ -853,7 +816,7 @@ function SettingsPage({ onGameSelect }) {
               
               <button 
                 className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md transition-colors duration-300 disabled:opacity-50"
-                onClick={handleSaveJackett}
+                onClick={handleTestJackett}
                 disabled={isTestingJackett || isSavingJackett}
               >
                 {isSavingJackett ? 'Saving...' : 'Save Settings'}
@@ -890,18 +853,6 @@ function SettingsPage({ onGameSelect }) {
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">Torrent Search Providers</h2>
           
-          {providerError && (
-            <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <p>{providerError}</p>
-            </div>
-          )}
-
-          {providerSuccess && (
-            <div className="bg-green-900 text-white p-4 rounded-md mb-4">
-              <p>{providerSuccess}</p>
-            </div>
-          )}
-
           <p className="text-gray-300 mb-4">
             Configure which torrent sources to search. Disable sources you don't want to use to speed up searches.
           </p>
@@ -985,6 +936,23 @@ function SettingsPage({ onGameSelect }) {
               The app uses a hybrid approach: it searches enabled public torrent APIs and uses Jackett when available for enhanced results.
               {jackettStatus?.connected ? ' Jackett is currently providing additional search sources.' : ' Configure Jackett above for access to more torrent sources.'}
             </p>
+          </div>
+        </div>
+
+        {/* App Information */}
+        <div className="bg-gray-800 rounded-lg shadow-lg p-6">
+          <h3 className="text-xl font-bold mb-4 text-white">App Information</h3>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-medium text-gray-300">Current Version</p>
+              <p className="text-sm text-gray-400">{currentVersion}</p>
+            </div>
+            <button
+              onClick={checkForUpdates}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors duration-300"
+            >
+              Check for Updates
+            </button>
           </div>
         </div>
       </div>

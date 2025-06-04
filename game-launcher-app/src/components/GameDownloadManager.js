@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import { useNotifications } from '../context/NotificationContext';
+import { createNotificationHandlers } from '../services/notificationService';
 import torrentService from '../services/torrentService';
 
 const GameDownloadManager = ({ selectedGame, onClose }) => {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-  const [downloadStatus, setDownloadStatus] = useState(null);
   const [serviceHealth, setServiceHealth] = useState({});
-  const [error, setError] = useState(null);
+  const notifications = createNotificationHandlers(useNotifications);
 
   useEffect(() => {
     checkServiceHealth();
@@ -17,80 +18,115 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
   }, [selectedGame]);
 
   const checkServiceHealth = async () => {
-    try {
-      const health = await torrentService.checkServiceHealth();
-      setServiceHealth(health);
-    } catch (err) {
-      console.error('Health check failed:', err);
-    }
+    await notifications.withNotifications(
+      async () => {
+        const health = await torrentService.checkServiceHealth();
+        setServiceHealth(health);
+        return health;
+      },
+      {
+        errorMessage: {
+          title: 'Service health check failed',
+          subtitle: 'Some download services may not be available'
+        }
+      }
+    );
   };
 
   const searchGame = async (gameName) => {
     setIsSearching(true);
-    setError(null);
     setSearchResults([]);
 
-    try {
-      console.log(`🔍 Searching DHT for: ${gameName}`);
-      const results = await torrentService.searchGameTorrents(gameName, {
-        autoAddToRealDebrid: false,
-        limit: 15
-      });
+    await notifications.withNotifications(
+      async () => {
+        console.log(`🔍 Searching DHT for: ${gameName}`);
+        const results = await torrentService.searchGameTorrents(gameName, {
+          autoAddToRealDebrid: false,
+          limit: 15
+        });
 
-      setSearchResults(results);
-      
-      if (results.length === 0) {
-        setError(`No game torrents found for "${gameName}". Try a different search term.`);
+        setSearchResults(results);
+        
+        if (results.length === 0) {
+          notifications.notifyWarning('No torrents found', {
+            subtitle: `No game torrents found for "${gameName}". Try a different search term.`
+          });
+        } else {
+          notifications.notifySuccess('Search completed', {
+            subtitle: `Found ${results.length} torrents for "${gameName}"`
+          });
+        }
+        
+        return results;
+      },
+      {
+        errorMessage: {
+          title: 'Search failed',
+          subtitle: 'Could not search for game torrents'
+        },
+        onSuccess: () => setIsSearching(false),
+        onError: () => setIsSearching(false)
       }
-    } catch (err) {
-      setError(`Search failed: ${err.message}`);
-      console.error('Search error:', err);
-    } finally {
-      setIsSearching(false);
-    }
+    );
   };
 
   const downloadGame = async (torrent) => {
     setIsDownloading(true);
-    setError(null);
-    setDownloadStatus(`Adding "${torrent.name}" to Real-Debrid...`);
 
-    try {
-      await torrentService.addToRealDebrid(torrent);
-      setDownloadStatus(`✅ Successfully added to Real-Debrid! Check your downloads.`);
-      
-      // Auto-close after success
-      setTimeout(() => {
-        onClose?.();
-      }, 2000);
-    } catch (err) {
-      setError(`Download failed: ${err.message}`);
-      setDownloadStatus(null);
-    } finally {
-      setIsDownloading(false);
-    }
+    await notifications.withDownloadNotifications(
+      async ({ onProgress }) => {
+        // Simulate progress for Real-Debrid addition
+        onProgress(10, 'Adding torrent to Real-Debrid...');
+        
+        const result = await torrentService.addToRealDebrid(torrent);
+        
+        onProgress(100, 'Successfully added to Real-Debrid!');
+        
+        // Auto-close after success
+        setTimeout(() => {
+          onClose?.();
+        }, 2000);
+        
+        return result;
+      },
+      {
+        downloadName: torrent.name,
+        onSuccess: () => setIsDownloading(false),
+        onError: () => setIsDownloading(false)
+      }
+    );
   };
 
   const quickDownload = async () => {
     if (!selectedGame) return;
     
     setIsDownloading(true);
-    setError(null);
-    setDownloadStatus(`🚀 Quick downloading "${selectedGame.name}"...`);
 
-    try {
-      const result = await torrentService.quickGameDownload(selectedGame.name);
-      setDownloadStatus(`✅ "${result.torrent.name}" added to Real-Debrid!`);
-      
-      setTimeout(() => {
-        onClose?.();
-      }, 2000);
-    } catch (err) {
-      setError(`Quick download failed: ${err.message}`);
-      setDownloadStatus(null);
-    } finally {
-      setIsDownloading(false);
-    }
+    await notifications.withDownloadNotifications(
+      async ({ onProgress }) => {
+        onProgress(0, 'Searching for best torrent...');
+        
+        const result = await torrentService.quickGameDownload(selectedGame.name);
+        
+        onProgress(50, 'Found torrent, adding to Real-Debrid...');
+        
+        // Give it a moment to process
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        onProgress(100, 'Successfully added to Real-Debrid!');
+        
+        setTimeout(() => {
+          onClose?.();
+        }, 2000);
+        
+        return result;
+      },
+      {
+        downloadName: selectedGame.name,
+        onSuccess: () => setIsDownloading(false),
+        onError: () => setIsDownloading(false)
+      }
+    );
   };
 
   const formatFileSize = (bytes) => {
@@ -179,12 +215,6 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
             )}
           </button>
           
-          {downloadStatus && (
-            <div className="mt-3 p-3 bg-blue-900 rounded-lg text-center text-blue-100">
-              {downloadStatus}
-            </div>
-          )}
-          
           <p className="text-gray-400 text-sm mt-2 text-center">
             Automatically finds and downloads the best torrent to Real-Debrid
           </p>
@@ -202,28 +232,6 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
               {isSearching ? 'Searching...' : 'Refresh'}
             </button>
           </div>
-
-          {/* Error Display */}
-          {error && (
-            <div className="bg-red-900 border border-red-700 text-white p-4 rounded-lg mb-4">
-              <div className="flex items-center">
-                <svg className="w-5 h-5 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span>{error}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Loading State */}
-          {isSearching && (
-            <div className="flex justify-center py-12">
-              <div className="text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500 mx-auto mb-4"></div>
-                <p className="text-gray-400">Searching DHT network for game torrents...</p>
-              </div>
-            </div>
-          )}
 
           {/* Results List */}
           {!isSearching && searchResults.length > 0 && (
@@ -296,7 +304,7 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
           )}
 
           {/* No Results */}
-          {!isSearching && searchResults.length === 0 && !error && (
+          {!isSearching && searchResults.length === 0 && (
             <div className="text-center py-12">
               <svg className="w-16 h-16 mx-auto text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />

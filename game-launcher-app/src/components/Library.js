@@ -16,43 +16,79 @@ function Library({ onGameSelect }) {
   const [installedGames, setInstalledGames] = useState(new Set());
   const [downloadedGames, setDownloadedGames] = useState(new Set());
   const [activeDownloads, setActiveDownloads] = useState(new Map());
+  const [runningGames, setRunningGames] = useState(new Set());
+  const [gameStatuses, setGameStatuses] = useState(new Map());
 
   // Check for installed games and Real-Debrid downloads
   useEffect(() => {
     checkInstalledGames();
+    checkRunningGames();
     if (isAuthenticated) {
       checkRealDebridDownloads();
     }
   }, [isAuthenticated]);
 
-  // Poll for download status updates
+  // Poll for download status updates and running games
   useEffect(() => {
     if (isAuthenticated) {
       const interval = setInterval(() => {
         checkRealDebridDownloads();
         checkActiveDownloads();
-      }, 10000); // Check every 10 seconds
+        checkRunningGames();
+      }, 5000); // Check every 5 seconds
 
       return () => clearInterval(interval);
     }
   }, [isAuthenticated]);
 
-  // Check for installed games (you can enhance this with actual file system checks)
+  // Check for installed games
   const checkInstalledGames = async () => {
     try {
-      // This would normally check if games are installed on the system
-      // For now, we'll check if games exist in the download location
-      if (window.api?.download?.getDownloadLocation) {
-        const downloadLocation = await window.api.download.getDownloadLocation();
-        if (downloadLocation) {
-          // Check for game folders in download location
-          // This is a simplified check - you might want to implement more sophisticated detection
-          const mockInstalledGameIds = ['123456', '789012', '345678']; // Example IDs
-          setInstalledGames(new Set(mockInstalledGameIds));
+      const downloadLocation = await window.api.download.getDownloadLocation();
+      if (downloadLocation) {
+        const updatedStatuses = new Map();
+        
+        for (const game of library) {
+          const gameInfo = {
+            gameId: game.appId,
+            gameName: game.name,
+            gameDirectory: `${downloadLocation}/${game.name}`
+          };
+          
+          try {
+            const readyStatus = await window.api.launcher.isGameReady(gameInfo);
+            if (readyStatus.ready) {
+              setInstalledGames(prev => new Set(prev).add(game.appId));
+              updatedStatuses.set(game.appId, {
+                ...readyStatus,
+                gameDirectory: gameInfo.gameDirectory
+              });
+            } else {
+              setInstalledGames(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(game.appId);
+                return newSet;
+              });
+            }
+          } catch (error) {
+            console.warn(`Failed to check game readiness for ${game.name}:`, error);
+          }
         }
+        
+        setGameStatuses(updatedStatuses);
       }
     } catch (error) {
       console.warn('Failed to check installed games:', error);
+    }
+  };
+
+  // Check for running games
+  const checkRunningGames = async () => {
+    try {
+      const runningGameIds = await window.api.launcher.getRunningGames();
+      setRunningGames(new Set(runningGameIds));
+    } catch (error) {
+      console.warn('Failed to check running games:', error);
     }
   };
 
@@ -129,6 +165,8 @@ function Library({ onGameSelect }) {
           return downloadedGames.has(game.appId);
         case 'downloading':
           return activeDownloads.has(game.appId);
+        case 'running':
+          return runningGames.has(game.appId);
         default:
           return true;
       }
@@ -170,18 +208,53 @@ function Library({ onGameSelect }) {
 
   const handleGameAction = async (game) => {
     const isInstalled = installedGames.has(game.appId);
+    const isRunning = runningGames.has(game.appId);
     const isDownloaded = downloadedGames.has(game.appId);
     const activeDownload = activeDownloads.get(game.appId);
     
-    if (isInstalled) {
-      // Launch game
-      console.log('Launching game:', game.name);
+    if (isRunning) {
+      // Stop the game
       try {
-        if (window.api?.download?.openDownloadLocation) {
-          await window.api.download.openDownloadLocation();
+        console.log('Stopping game:', game.name);
+        const result = await window.api.launcher.stopGame(game.appId);
+        if (result.success) {
+          console.log('Game stopped successfully');
+          // Update running games state
+          setRunningGames(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(game.appId);
+            return newSet;
+          });
+        } else {
+          console.error('Failed to stop game:', result.error);
         }
       } catch (error) {
-        console.error('Failed to open game location:', error);
+        console.error('Error stopping game:', error);
+      }
+    } else if (isInstalled) {
+      // Launch game
+      try {
+        console.log('Launching game:', game.name);
+        const gameStatus = gameStatuses.get(game.appId);
+        const gameInfo = {
+          gameId: game.appId,
+          gameName: game.name,
+          gameDirectory: gameStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
+        };
+        
+        const result = await window.api.launcher.launchGame(gameInfo);
+        if (result.success) {
+          console.log('Game launched successfully');
+          // Update running games state
+          setRunningGames(prev => new Set(prev).add(game.appId));
+        } else if (result.needsManualSetup) {
+          // Show executable selection dialog
+          await handleExecutableSelection(game, gameInfo);
+        } else {
+          console.error('Failed to launch game:', result.error);
+        }
+      } catch (error) {
+        console.error('Error launching game:', error);
       }
     } else if (isDownloaded) {
       // Game is downloaded but not installed - open download location
@@ -202,6 +275,54 @@ function Library({ onGameSelect }) {
     }
   };
 
+  const handleExecutableSelection = async (game, gameInfo) => {
+    try {
+      // First try to scan for executables automatically
+      const scanResult = await window.api.launcher.findExecutable(gameInfo);
+      
+      if (scanResult.needsUserSelection && scanResult.availableExecutables) {
+        // Show a selection dialog with available executables
+        // For now, we'll use the first executable or let user select manually
+        console.log('Multiple executables found:', scanResult.availableExecutables);
+        
+        // You could implement a custom modal here to let user choose
+        // For now, let's try the first one
+        if (scanResult.availableExecutables.length > 0) {
+          const selectedExecutable = scanResult.availableExecutables[0];
+          const setResult = await window.api.launcher.setExecutablePath(game.appId, selectedExecutable);
+          
+          if (setResult.success) {
+            // Try launching again
+            const launchResult = await window.api.launcher.launchGame(gameInfo);
+            if (launchResult.success) {
+              setRunningGames(prev => new Set(prev).add(game.appId));
+            }
+          }
+        }
+      } else {
+        // No executables found or other error
+        console.error('No executables found:', scanResult.error);
+        
+        // Let user manually select executable
+        const fileResult = await window.api.selectExecutable();
+        if (!fileResult.canceled && fileResult.filePaths.length > 0) {
+          const executablePath = fileResult.filePaths[0];
+          const setResult = await window.api.launcher.setExecutablePath(game.appId, executablePath);
+          
+          if (setResult.success) {
+            // Try launching again
+            const launchResult = await window.api.launcher.launchGame(gameInfo);
+            if (launchResult.success) {
+              setRunningGames(prev => new Set(prev).add(game.appId));
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error handling executable selection:', error);
+    }
+  };
+
   const closeDetailView = () => {
     setSelectedGame(null);
     setSelectedGameDetails(null);
@@ -209,16 +330,29 @@ function Library({ onGameSelect }) {
 
   const getGameStatus = (game) => {
     const isInstalled = installedGames.has(game.appId);
+    const isRunning = runningGames.has(game.appId);
     const isDownloaded = downloadedGames.has(game.appId);
     const activeDownload = activeDownloads.get(game.appId);
     
-    if (isInstalled) {
+    if (isRunning) {
+      return { status: 'running', text: '🎮 Running', color: 'text-green-400', action: 'Stop Game' };
+    } else if (isInstalled) {
       return { status: 'installed', text: '● Installed', color: 'text-green-400', action: 'Play Game' };
     } else if (activeDownload) {
       const progress = activeDownload.progress || 0;
+      let statusText = `⬇ Downloading ${progress.toFixed(1)}%`;
+      
+      if (activeDownload.status === 'extracting') {
+        statusText = `🔧 Extracting...`;
+      } else if (activeDownload.status === 'extracted') {
+        statusText = `✅ Extracted`;
+      } else if (activeDownload.status === 'extraction_failed') {
+        statusText = `❌ Extraction Failed`;
+      }
+      
       return { 
         status: 'downloading', 
-        text: `⬇ Downloading ${progress.toFixed(1)}%`, 
+        text: statusText, 
         color: 'text-blue-400', 
         action: 'View Progress',
         progress: progress
@@ -506,6 +640,7 @@ function Library({ onGameSelect }) {
               <option value="installed">Installed</option>
               <option value="downloaded">Downloaded</option>
               <option value="downloading">Downloading</option>
+              <option value="running">Running</option>
               <option value="notInstalled">Not Downloaded</option>
             </select>
           </div>

@@ -433,29 +433,6 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                         </div>
                       </div>
                     )}
-
-                    {/* Media Summary */}
-                    {mediaItems.length > 0 && (
-                      <div>
-                        <h4 className="text-lg font-semibold mb-3">Media Gallery</h4>
-                        <p className="text-gray-300 mb-3">
-                          Explore {game.screenshots?.length || 0} screenshots{game.videos?.length > 0 && ` and ${game.videos.length} videos`} in the gallery above.
-                          {autoRotate && " Auto-rotation is enabled - media will cycle automatically every 5 seconds."}
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {game.screenshots?.length > 0 && (
-                            <span className="bg-gray-700 text-gray-300 px-3 py-1 rounded-full text-sm">
-                              📸 {game.screenshots.length} Screenshots
-                            </span>
-                          )}
-                          {game.videos?.length > 0 && (
-                            <span className="bg-gray-700 text-gray-300 px-3 py-1 rounded-full text-sm">
-                              🎥 {game.videos.length} Videos
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
 
                   {/* Sidebar */}
@@ -542,28 +519,11 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                     <div className="bg-gray-700 rounded-lg p-4">
                       <h4 className="font-semibold mb-3">System Requirements</h4>
                       <div className="text-sm space-y-2">
-                        <div>
-                          <span className="text-gray-400">OS:</span>
-                          <p className="text-gray-300">Windows 10 64-bit or newer</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-400">Memory:</span>
-                          <p className="text-gray-300">8 GB RAM</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-400">Graphics:</span>
-                          <p className="text-gray-300">DirectX 11 compatible</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-400">Storage:</span>
-                          <p className="text-gray-300">50 GB available space</p>
-                        </div>
-                        <div>
-                          <span className="text-gray-400">Network:</span>
-                          <p className="text-gray-300">Broadband Internet connection</p>
-                        </div>
-                        <p className="text-xs text-gray-500 mt-2">
-                          Note: System requirements are estimated based on game type and may vary.
+                        <p className="text-gray-300">
+                          System requirements are not available through our game database.
+                        </p>
+                        <p className="text-gray-400 text-xs mt-3">
+                          For accurate system requirements, please check the game's official store page or the publisher's website.
                         </p>
                       </div>
                     </div>

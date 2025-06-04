@@ -8,17 +8,27 @@
     "dist/**/*",
     "main.js",
     "preload.js",
+    "setup-downloads.js",
     "package.json"
   ],
+  "publish": {
+    "provider": "github",
+    "owner": "Logan_McGo",
+    "repo": "GameManager"
+  },
   "win": {
     "target": [
-      "nsis"
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
     ],
     "icon": "src/assets/icon.ico"
   },
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
-    "createDesktopShortcut": true
+    "createDesktopShortcut": true,
+    "allowElevation": true
   }
 }

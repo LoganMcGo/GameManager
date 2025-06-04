@@ -1,13 +1,16 @@
 {
   "name": "game-launcher-app",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "concurrently \"webpack serve --mode development\" \"cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
     "build": "webpack --mode production",
     "package": "electron-builder",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "release:patch": "npm version patch && git push && git push --tags",
+    "release:minor": "npm version minor && git push && git push --tags",
+    "release:major": "npm version major && git push && git push --tags"
   },
   "keywords": [],
   "author": "",
@@ -38,6 +41,7 @@
     "axios": "^1.9.0",
     "cheerio": "^1.0.0",
     "electron-store": "^10.0.1",
+    "electron-updater": "^6.1.7",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.6.0"

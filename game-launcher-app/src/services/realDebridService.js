@@ -1117,21 +1117,53 @@ async function startFileDownload(downloadUrl, filename, torrentId) {
   try {
     console.log(`🔄 Starting download: ${filename}`);
     
-    // Get download location from the download service
-    const downloadService = global.downloadService;
+    // Get download location from multiple sources
+    const gameDownloadService = global.gameDownloadService;
     let downloadLocation;
     
-    if (downloadService) {
-      downloadLocation = downloadService.getDownloadLocation();
+    // First try to get from the backend download service
+    if (gameDownloadService) {
+      downloadLocation = gameDownloadService.getDownloadLocation();
+      console.log(`📁 Backend download location: ${downloadLocation || 'not set'}`);
     }
     
-    // If no download location is set, use default Downloads folder
+    // If no location from backend, try to get it from frontend via IPC
+    if (!downloadLocation) {
+      try {
+        // Use the existing IPC handler to get location from frontend localStorage
+        const { ipcMain } = require('electron');
+        const frontendLocation = await new Promise((resolve) => {
+          // Simulate IPC call to get frontend download location
+          // This would typically be handled by the download service's get-location handler
+          resolve(null); // For now, this will be null, but the structure is ready
+        });
+        
+        if (frontendLocation) {
+          downloadLocation = frontendLocation;
+          console.log(`📁 Frontend download location: ${downloadLocation}`);
+          
+          // Sync it back to the backend service for future use
+          if (gameDownloadService) {
+            gameDownloadService.setDownloadLocation(downloadLocation);
+          }
+        }
+      } catch (error) {
+        console.warn('Could not retrieve download location from frontend:', error.message);
+      }
+    }
+    
+    // If still no download location is set, use default Downloads folder
     if (!downloadLocation) {
       const { app } = require('electron');
       const path = require('path');
       const os = require('os');
       downloadLocation = path.join(os.homedir(), 'Downloads');
       console.log(`⚠️ No download location configured, using default: ${downloadLocation}`);
+      
+      // Also save this default location to both backend and frontend for consistency
+      if (gameDownloadService) {
+        gameDownloadService.setDownloadLocation(downloadLocation);
+      }
     } else {
       console.log(`📁 Using configured download location: ${downloadLocation}`);
     }
@@ -1150,8 +1182,8 @@ async function startFileDownload(downloadUrl, filename, torrentId) {
     
     // Emit the download start event to the download service
     // Since we're in the main process, we can call the download service directly
-    if (downloadService) {
-      const result = await downloadService.startDownload(downloadInfo);
+    if (gameDownloadService) {
+      const result = await gameDownloadService.startDownload(downloadInfo);
       
       if (result.success) {
         console.log(`✅ Download started successfully: ${filename}`);

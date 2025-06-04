@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useIgdb } from '../context/IgdbContext';
-import gameDownloadService from '../services/gameDownloadService';
+import { useNotifications } from '../context/NotificationContext';
+import { createNotificationHandlers } from '../services/notificationService';
+import gameFinderService from '../services/gameFinderService';
 
 const SearchBar = ({ onGameSelect, isMainPage = false }) => {
   const [query, setQuery] = useState('');
@@ -8,9 +10,10 @@ const SearchBar = ({ onGameSelect, isMainPage = false }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [downloadStatus, setDownloadStatus] = useState({});
+  const [isDownloading, setIsDownloading] = useState(new Set());
   
   const { searchGames } = useIgdb();
+  const notifications = createNotificationHandlers(useNotifications);
   const searchRef = useRef(null);
   const dropdownRef = useRef(null);
   const timeoutRef = useRef(null);
@@ -78,44 +81,54 @@ const SearchBar = ({ onGameSelect, isMainPage = false }) => {
     event.stopPropagation(); // Prevent game selection
     
     const gameId = game.appId;
-    setDownloadStatus(prev => ({
-      ...prev,
-      [gameId]: { status: 'downloading', message: 'Searching for torrents...' }
-    }));
-
-    try {
-      const result = await gameDownloadService.downloadGame(game.name);
-      
-      if (result.success) {
-        setDownloadStatus(prev => ({
-          ...prev,
-          [gameId]: { 
-            status: 'success', 
-            message: '✅ Added to Real-Debrid!',
-            torrent: result.torrent 
-          }
-        }));
-        
-        // Clear success message after 3 seconds
-        setTimeout(() => {
-          setDownloadStatus(prev => {
-            const newStatus = { ...prev };
-            delete newStatus[gameId];
-            return newStatus;
-          });
-        }, 3000);
-      } else {
-        setDownloadStatus(prev => ({
-          ...prev,
-          [gameId]: { status: 'error', message: `❌ ${result.error}` }
-        }));
-      }
-    } catch (error) {
-      setDownloadStatus(prev => ({
-        ...prev,
-        [gameId]: { status: 'error', message: `❌ Download failed: ${error.message}` }
-      }));
+    
+    // Prevent multiple downloads of the same game
+    if (isDownloading.has(gameId)) {
+      notifications.notifyWarning('Download already in progress', {
+        subtitle: `${game.name} is already being downloaded`
+      });
+      return;
     }
+    
+    setIsDownloading(prev => new Set(prev).add(gameId));
+
+    await notifications.withDownloadNotifications(
+      async ({ onProgress }) => {
+        onProgress(0, 'Searching for torrents...');
+        
+        const result = await gameFinderService.downloadGame(game.name);
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Download failed');
+        }
+        
+        onProgress(50, 'Found torrent, adding to Real-Debrid...');
+        
+        // Give time for the progress to show
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        onProgress(100, 'Added to Real-Debrid successfully!');
+        
+        return result;
+      },
+      {
+        downloadName: game.name,
+        onSuccess: () => {
+          setIsDownloading(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(gameId);
+            return newSet;
+          });
+        },
+        onError: () => {
+          setIsDownloading(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(gameId);
+            return newSet;
+          });
+        }
+      }
+    );
   };
 
   // Handle click outside to close dropdown
@@ -295,26 +308,12 @@ const SearchBar = ({ onGameSelect, isMainPage = false }) => {
 
                       {/* Download Button & Status */}
                       <div className="flex-shrink-0">
-                        {downloadStatus[game.appId] ? (
+                        {isDownloading.has(game.appId) ? (
                           <div className="text-center min-w-[80px]">
-                            {downloadStatus[game.appId].status === 'downloading' && (
-                              <div className="flex flex-col items-center">
-                                <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-400 mb-1"></div>
-                                <span className="text-xs text-blue-400">Downloading...</span>
-                              </div>
-                            )}
-                            {downloadStatus[game.appId].status === 'success' && (
-                              <div className="text-center">
-                                <div className="text-green-400 text-xl mb-1">✅</div>
-                                <span className="text-xs text-green-400">Added!</span>
-                              </div>
-                            )}
-                            {downloadStatus[game.appId].status === 'error' && (
-                              <div className="text-center">
-                                <div className="text-red-400 text-xl mb-1">❌</div>
-                                <span className="text-xs text-red-400">Failed</span>
-                              </div>
-                            )}
+                            <div className="flex flex-col items-center">
+                              <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-400 mb-1"></div>
+                              <span className="text-xs text-blue-400">Downloading...</span>
+                            </div>
                           </div>
                         ) : (
                           <button

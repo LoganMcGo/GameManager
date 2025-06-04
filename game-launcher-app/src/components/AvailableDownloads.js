@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useLibrary } from '../context/LibraryContext';
-import gameDownloadService from '../services/gameDownloadService';
+import gameFinderService from '../services/gameFinderService';
 
 function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
   const { isAuthenticated } = useAuth();
@@ -29,7 +29,7 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
 
     try {
       console.log(`🔍 Searching for downloads: ${gameName}`);
-      const response = await gameDownloadService.searchTorrents(gameName);
+      const response = await gameFinderService.searchTorrents(gameName);
       
       if (response.success) {
         setDownloads(response.data);
@@ -65,8 +65,8 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
         throw new Error('No valid magnet link available');
       }
 
-      // Add magnet to Real-Debrid using gameDownloadService
-      const addResponse = await gameDownloadService.addToRealDebrid({ magnet: magnetLink, name: downloadItem.title });
+      // Add magnet to Real-Debrid using gameFinderService
+      const addResponse = await gameFinderService.addToRealDebrid({ magnet: magnetLink, name: downloadItem.title });
       
       if (addResponse.success) {
         console.log('✅ Successfully added magnet to Real-Debrid');

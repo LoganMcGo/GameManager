@@ -1,10 +1,13 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const url = require('url');
 const { initRealDebridService } = require('./src/services/realDebridService');
 const { initIgdbService } = require('./src/services/igdbService');
-const { initDownloadService } = require('./src/services/downloadService');
+const { initGameDownloadService } = require('./src/services/gameDownloadService');
 const { initJwtService } = require('./src/services/jwtService');
+const { initGameExtractionService } = require('./src/services/gameExtractionService');
+const { initGameLauncherService } = require('./src/services/gameLauncherService');
+const { autoUpdater } = require('electron-updater');
 
 // Keep a global reference of the window object to prevent it from being garbage collected
 let mainWindow;
@@ -120,20 +123,145 @@ function setupWindowControls() {
   });
 }
 
-// Create window and initialize services when Electron has finished initialization
-app.whenReady().then(() => {
-  createWindow();
-  setupWindowControls();
+// IPC handlers for dialog operations
+function setupDialogHandlers() {
+  // Folder selection dialog
+  ipcMain.handle('dialog:select-folder', async () => {
+    if (!mainWindow) {
+      return { canceled: true, filePaths: [] };
+    }
+    
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory'],
+        title: 'Select Download Folder'
+      });
+      
+      return result;
+    } catch (error) {
+      console.error('Error opening folder dialog:', error);
+      return { canceled: true, filePaths: [] };
+    }
+  });
+
+  // File selection dialog for executable
+  ipcMain.handle('dialog:select-executable', async () => {
+    if (!mainWindow) {
+      return { canceled: true, filePaths: [] };
+    }
+    
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile'],
+        title: 'Select Game Executable',
+        filters: [
+          { name: 'Executable Files', extensions: ['exe'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      });
+      
+      return result;
+    } catch (error) {
+      console.error('Error opening executable dialog:', error);
+      return { canceled: true, filePaths: [] };
+    }
+  });
+}
+
+// Initialize services and handle cleanup
+function initializeServices() {
+  console.log('🚀 Initializing Game Manager Services...');
+  
+  // Initialize core services
   initJwtService();
   initRealDebridService();
   initIgdbService();
   
-  // Initialize download service and store globally for access by other services
-  global.downloadService = initDownloadService();
+  // Initialize download service (for handling file downloads)
+  global.gameDownloadService = initGameDownloadService();
+  
+  // Initialize game extraction service
+  global.extractionService = initGameExtractionService();
+  
+  // Initialize game launcher service
+  global.launcherService = initGameLauncherService();
+
+  console.log('✅ All services initialized successfully');
+}
+
+// Handle app cleanup
+function handleAppCleanup() {
+  console.log('🧹 Cleaning up services...');
+  
+  if (global.extractionService) {
+    global.extractionService.cleanup();
+  }
+  
+  if (global.launcherService) {
+    global.launcherService.cleanup();
+  }
+  
+  if (global.gameDownloadService) {
+    global.gameDownloadService.cleanup();
+  }
+}
+
+// Auto-updater setup
+if (!process.env.NODE_ENV === 'development') {
+  autoUpdater.checkForUpdatesAndNotify();
+  
+  autoUpdater.on('update-available', (info) => {
+    mainWindow.webContents.send('update-available', {
+      version: info.version,
+      releaseNotes: info.releaseNotes,
+      releaseName: info.releaseName,
+      releaseDate: info.releaseDate
+    });
+  });
+  
+  autoUpdater.on('update-downloaded', (info) => {
+    mainWindow.webContents.send('update-downloaded', {
+      version: info.version,
+      releaseNotes: info.releaseNotes
+    });
+  });
+  
+  autoUpdater.on('download-progress', (progressObj) => {
+    mainWindow.webContents.send('update-progress', progressObj);
+  });
+  
+  autoUpdater.on('error', (error) => {
+    mainWindow.webContents.send('update-error', error.message);
+  });
+}
+
+// Handle update install
+ipcMain.handle('restart-and-update', () => {
+  autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle('check-for-updates', () => {
+  if (!process.env.NODE_ENV === 'development') {
+    autoUpdater.checkForUpdatesAndNotify();
+  }
+});
+
+// Handle app version request
+ipcMain.handle('app:get-version', () => {
+  return app.getVersion();
+});
+
+// Create window and initialize services when Electron has finished initialization
+app.whenReady().then(() => {
+  createWindow();
+  setupWindowControls();
+  setupDialogHandlers();
+  initializeServices();
 });
 
 // Quit when all windows are closed, except on macOS
 app.on('window-all-closed', function () {
+  handleAppCleanup();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -141,3 +269,9 @@ app.on('window-all-closed', function () {
 app.on('activate', function () {
   if (mainWindow === null) createWindow();
 });
+
+// Handle app before quit
+app.on('before-quit', () => {
+  handleAppCleanup();
+});
+
