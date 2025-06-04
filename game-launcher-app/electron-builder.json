@@ -11,11 +11,15 @@
     "setup-downloads.js",
     "package.json"
   ],
-  "publish": {
-    "provider": "github",
-    "owner": "Logan_McGo",
-    "repo": "GameManager"
-  },
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "Logan_McGo",
+      "repo": "GameManager",
+      "vPrefixedTagName": true,
+      "releaseType": "draft"
+    }
+  ],
   "win": {
     "target": [
       {
