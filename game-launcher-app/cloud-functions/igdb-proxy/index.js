@@ -277,18 +277,26 @@ functions.http('igdbProxy', async (req, res) => {
       });
     }
     
-    // Extract endpoint from URL
-    // URL format: /igdb-proxy/games or /igdb-proxy/search
-    const urlPath = req.path || req.url || '';
-    const endpoint = urlPath.replace(/^\/[^\/]*\//, '') || 'games'; // Remove function name, default to games
+    // Extract endpoint and query from request body
+    let endpoint = 'games'; // default
+    let queryData = null;
+    
+    if (req.body && typeof req.body === 'object') {
+      if (req.body.endpoint) {
+        endpoint = req.body.endpoint;
+      }
+      if (req.body.query) {
+        queryData = req.body.query;
+      }
+    }
     
     console.log(`Processing IGDB request for machine ${machineId.substring(0, 8)}... endpoint: ${endpoint}`);
     
     // Forward the request to IGDB
     const result = await forwardToIgdb(
       endpoint,
-      req.method,
-      req.body,
+      'POST', // IGDB API queries are typically POST requests
+      queryData, // Pass the query as the data
       req.query
     );
     

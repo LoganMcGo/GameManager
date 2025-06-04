@@ -4,7 +4,7 @@ const { ipcMain, shell } = require('electron');
 const { makeProxyRequest } = require('./jwtService');
 
 // Cloud function URL for Real-Debrid proxy
-const REAL_DEBRID_PROXY_URL = 'https://us-central1-gamemanagerproxy.cloudfunctions.net/realDebridProxy';
+const REAL_DEBRID_PROXY_URL = 'https://us-central1-gamemanagerproxy.cloudfunctions.net/real-debrid-proxy';
 
 // Base URLs for Real-Debrid API (kept for OAuth endpoints that don't go through proxy)
 const BASE_URL = 'https://api.real-debrid.com/rest/1.0';

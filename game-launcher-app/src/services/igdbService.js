@@ -149,12 +149,17 @@ async function makeApiRequest(endpoint, query) {
   try {
     console.log(`Making IGDB proxy request to ${endpoint}`);
     
-    const response = await makeProxyRequest(`${IGDB_PROXY_URL}/${endpoint}`, {
+    // Send the request directly to the proxy function without appending endpoint to URL
+    // The endpoint information will be included in the request body or handled by the proxy
+    const response = await makeProxyRequest(IGDB_PROXY_URL, {
       method: 'POST',
       headers: {
-        'Content-Type': 'text/plain'
+        'Content-Type': 'application/json'
       },
-      data: query
+      data: {
+        endpoint: endpoint,
+        query: query
+      }
     });
     
     return response;

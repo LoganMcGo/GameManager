@@ -156,6 +156,9 @@ async function requestNewToken() {
     if (response.data && response.data.token) {
       // Format: { token: "jwt_token_here" }
       token = response.data.token;
+    } else if (response.data && response.data.success && response.data.api_key) {
+      // Format: { success: true, api_key: "jwt_token_here", ... }
+      token = response.data.api_key;
     } else if (response.data && response.data.success && response.data.data && response.data.data.token) {
       // Format: { success: true, data: { token: "jwt_token_here" } }
       token = response.data.data.token;
