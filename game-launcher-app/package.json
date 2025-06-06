@@ -6,7 +6,7 @@
     "start": "electron .",
     "dev": "concurrently \"webpack serve --mode development\" \"cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
     "build": "webpack --mode production",
-    "package": "electron-builder",
+    "package": "electron-builder --publish=always",
     "test": "echo \"Error: no test specified\" && exit 1",
     "release:patch": "npm version patch && git push && git push --tags",
     "release:minor": "npm version minor && git push && git push --tags",
