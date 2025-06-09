@@ -16,7 +16,8 @@
       "provider": "github",
       "owner": "Logan_McGo",
       "repo": "GameManager",
-      "vPrefixedTagName": true
+      "vPrefixedTagName": true,
+      "releaseType": "release"
     }
   ],
   "win": {
