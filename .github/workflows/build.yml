@@ -50,7 +50,7 @@ jobs:
       if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
       run: |
         cd game-launcher-app
-        npm run package
+        npm run build-only
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         

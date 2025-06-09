@@ -6,7 +6,9 @@
     "start": "electron .",
     "dev": "concurrently \"webpack serve --mode development\" \"cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
     "build": "webpack --mode production",
+    "build-only": "electron-builder --publish=never",
     "package": "electron-builder --publish=always",
+    "package-test": "electron-builder --publish=never",
     "test": "echo \"Error: no test specified\" && exit 1",
     "release:patch": "npm version patch && git push && git push --tags",
     "release:minor": "npm version minor && git push && git push --tags",
@@ -15,7 +17,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "A modern game launcher application built with Electron and React",
   "repository": {
     "type": "git",
     "url": "https://github.com/Logan_McGo/GameManager.git"
