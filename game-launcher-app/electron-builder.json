@@ -6,6 +6,7 @@
   },
   "files": [
     "dist/**/*",
+    "src/**/*",
     "main.js",
     "preload.js",
     "setup-downloads.js",
