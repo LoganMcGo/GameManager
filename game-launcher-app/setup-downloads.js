@@ -50,24 +50,25 @@ if (!envContent.includes('AUTO_DOWNLOAD_ENABLED')) {
 // Create a simple test script
 const testScript = `
 // Test the download service
-import gameFinderService from './src/services/gameFinderService.js';
+// import gameFinderService from './src/services/gameFinderService.js';
 
 async function testDownload() {
   console.log('🧪 Testing download service...');
   
   try {
-    // Test search functionality
-    const result = await gameFinderService.downloadGame('Cyberpunk 2077', {
-      minSeeders: 1,
-      maxSizeGB: 50
-    });
+    // Test search functionality - uncomment the import above to use
+    // const result = await gameFinderService.downloadGame('Cyberpunk 2077', {
+    //   minSeeders: 1,
+    //   maxSizeGB: 50
+    // });
     
-    if (result.success) {
-      console.log('✅ Download service working!');
-      console.log('🎯 Found torrent:', result.torrent.name);
-    } else {
-      console.log('❌ Download failed:', result.error);
-    }
+    // if (result.success) {
+    //   console.log('✅ Download service working!');
+    //   console.log('🎯 Found torrent:', result.torrent.name);
+    // } else {
+    //   console.log('❌ Download failed:', result.error);
+    // }
+    console.log('⚠️ Uncomment the gameFinderService import and usage above to test');
   } catch (error) {
     console.log('❌ Service error:', error.message);
   }

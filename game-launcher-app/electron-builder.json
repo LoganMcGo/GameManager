@@ -9,7 +9,6 @@
     "src/**/*",
     "main.js",
     "preload.js",
-    "setup-downloads.js",
     "package.json"
   ],
   "publish": [
