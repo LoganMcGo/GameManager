@@ -1,3 +1,6 @@
+// Force CommonJS mode and handle module loading errors
+process.env.NODE_OPTIONS = '--no-experimental-modules';
+
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const url = require('url');
