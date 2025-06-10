@@ -25,7 +25,9 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
       webSecurity: true,  // Enable web security
-      zoomFactor: 1.0     // Ensure initial zoom is 1x
+      zoomFactor: 1.0,    // Ensure initial zoom is 1x
+      sandbox: false,     // Disable sandbox for module loading
+      enableRemoteModule: false
     },
     autoHideMenuBar: true, // Hide the menu bar
     frame: false, // Remove the window frame (including file and edit buttons)
@@ -251,8 +253,20 @@ ipcMain.handle('app:get-version', () => {
   return app.getVersion();
 });
 
+// Fix for ESM loading issues with newer Electron versions
+app.commandLine.appendSwitch('--disable-features', 'OutOfBlinkCors');
+app.commandLine.appendSwitch('--disable-web-security');
+
 // Create window and initialize services when Electron has finished initialization
 app.whenReady().then(() => {
+  // Register custom protocol handler for file:// URLs
+  const { protocol } = require('electron');
+  
+  protocol.registerFileProtocol('file', (request, callback) => {
+    const pathname = decodeURI(request.url.replace('file:///', ''));
+    callback(pathname);
+  });
+  
   createWindow();
   setupWindowControls();
   setupDialogHandlers();
