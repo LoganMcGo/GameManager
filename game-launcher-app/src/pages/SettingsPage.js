@@ -6,17 +6,15 @@ import gameFinderService from '../services/gameFinderService';
 import { useAutoUpdater } from '../hooks/useAutoUpdater';
 
 function SettingsPage({ onGameSelect }) {
-  const { isAuthenticated, userInfo, startAuthFlow, checkAuthFlowStatus, disconnect } = useAuth();
+  const { firstLaunch } = useAuth();
   const notifications = createNotificationHandlers(useNotifications);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [authFlow, setAuthFlow] = useState(null);
-  const [currentPollInterval, setCurrentPollInterval] = useState(8); // Track current polling interval in seconds
 
   // IGDB cloud proxy status state
   const [igdbStatus, setIgdbStatus] = useState({ connected: false, message: 'Not tested' });
   const [isTestingIgdb, setIsTestingIgdb] = useState(false);
 
   // Real-Debrid cloud proxy status state
+  const [realDebridStatus, setRealDebridStatus] = useState({ connected: false, message: 'Not tested' });
   const [isTestingRealDebridProxy, setIsTestingRealDebridProxy] = useState(false);
 
   // Jackett settings state
@@ -44,6 +42,7 @@ function SettingsPage({ onGameSelect }) {
     loadProviderSettings();
     loadDownloadLocationSettings();
     testIgdbConnection(); // Test IGDB cloud proxy on mount
+    testRealDebridProxy(); // Test Real-Debrid cloud proxy on mount
   }, []);
 
   // Load download location settings
@@ -226,155 +225,6 @@ function SettingsPage({ onGameSelect }) {
     );
   };
 
-  // Start Real Debrid authentication flow
-  const handleStartAuthFlow = async () => {
-    setIsConnecting(true);
-    setAuthFlow(null);
-    
-    try {
-      const authData = await startAuthFlow();
-      setAuthFlow(authData);
-      
-      // Start polling for authentication status with a longer initial interval
-      let pollInterval = 8000; // Start with 8 seconds
-      let pollCount = 0;
-      setCurrentPollInterval(8);
-      
-      const startPolling = () => {
-        setCurrentPollInterval(Math.floor(pollInterval / 1000));
-        const poll = setInterval(async () => {
-          try {
-            pollCount++;
-            console.log(`Polling attempt ${pollCount}, interval: ${pollInterval}ms`);
-            const status = await checkAuthFlowStatus();
-            console.log('Polling result:', status);
-            
-            if (status.status === 'authenticated') {
-              console.log('Authentication successful!');
-              clearInterval(poll);
-              setIsConnecting(false);
-              setAuthFlow(null);
-            } else if (status.status === 'error') {
-              console.error('Authentication error:', status.message);
-              clearInterval(poll);
-              setIsConnecting(false);
-              setAuthFlow(null);
-              
-              // Check if it's a cloud proxy error
-              if (status.message && (status.message.includes('proxy') || status.message.includes('cloud') || status.message.includes('fetch'))) {
-                notifications.notifyError('Authentication error', {
-                  subtitle: status.message
-                });
-              } else {
-                notifications.notifyError('Authentication failed', {
-                  subtitle: status.message || 'Authentication failed'
-                });
-              }
-            } else if (status.status === 'expired') {
-              console.error('Authentication expired');
-              clearInterval(poll);
-              setIsConnecting(false);
-              setAuthFlow(null);
-              notifications.notifyError('Authentication expired', {
-                subtitle: 'Please try again'
-              });
-            } else if (status.status === 'rate_limited') {
-              console.warn('Rate limited, backing off...');
-              // Increase polling interval when rate limited
-              clearInterval(poll);
-              notifications.notifyWarning('Rate limited', {
-                subtitle: 'Waiting longer before next attempt'
-              });
-              setTimeout(() => {
-                setError(null);
-                pollInterval = Math.min(pollInterval * 1.5, 30000); // Increase interval, max 30 seconds
-                setCurrentPollInterval(Math.floor(pollInterval / 1000));
-                console.log(`Resuming polling with new interval: ${pollInterval}ms`);
-                startPolling();
-              }, 15000); // Wait 15 seconds before resuming
-            } else if (status.status === 'pending') {
-              console.log('Still pending authorization...');
-            }
-            
-            // Gradually increase polling interval to be more respectful
-            if (pollCount > 5) {
-              console.log('Increasing polling interval after 5 attempts');
-              clearInterval(poll);
-              pollInterval = Math.min(pollInterval + 2000, 15000); // Increase by 2 seconds, max 15 seconds
-              setCurrentPollInterval(Math.floor(pollInterval / 1000));
-              pollCount = 0;
-              startPolling();
-            }
-          } catch (err) {
-            console.error('Error polling auth status:', err);
-            clearInterval(poll);
-            setIsConnecting(false);
-            setAuthFlow(null);
-            
-            // Check if it's a cloud proxy error
-            if (err.message && (err.message.includes('proxy') || err.message.includes('cloud') || err.message.includes('fetch'))) {
-              notifications.notifyError('Authentication error', {
-                subtitle: err.message
-              });
-            } else {
-              notifications.notifyError('Authentication failed', {
-                subtitle: err.message || 'Authentication failed'
-              });
-            }
-          }
-        }, pollInterval);
-
-        // Clear polling after the device code expires (30 minutes)
-        setTimeout(() => {
-          clearInterval(poll);
-          if (isConnecting) {
-            setIsConnecting(false);
-            setAuthFlow(null);
-            notifications.notifyError('Authentication expired', {
-              subtitle: 'Please try again'
-            });
-          }
-        }, 30 * 60 * 1000);
-      };
-      
-      startPolling();
-
-    } catch (err) {
-      console.error('Error starting auth flow:', err);
-      setIsConnecting(false);
-      
-      // Check if it's a cloud proxy error
-      if (err.message && (err.message.includes('proxy') || err.message.includes('cloud') || err.message.includes('fetch'))) {
-        notifications.notifyError('Authentication error', {
-          subtitle: err.message
-        });
-      } else {
-        notifications.notifyError('Failed to start authentication', {
-          subtitle: err.message || 'Failed to start authentication. Please try again.'
-        });
-      }
-    }
-  };
-
-  // Open verification URL
-  const openVerificationUrl = () => {
-    if (authFlow?.verificationUrl) {
-      window.open(authFlow.verificationUrl, '_blank');
-    }
-  };
-
-  // Handle disconnect
-  const handleDisconnect = async () => {
-    try {
-      await disconnect();
-    } catch (err) {
-      console.error('Error disconnecting:', err);
-      notifications.notifyError('Failed to disconnect', {
-        subtitle: 'Please try again'
-      });
-    }
-  };
-
   // Test IGDB cloud proxy connection
   const testIgdbConnection = async () => {
     setIsTestingIgdb(true);
@@ -419,25 +269,43 @@ function SettingsPage({ onGameSelect }) {
     }
   };
 
-  // Test Real-Debrid cloud proxy connection (basic connectivity test)
+  // Test Real-Debrid cloud proxy connection
   const testRealDebridProxy = async () => {
     setIsTestingRealDebridProxy(true);
     
     try {
-      // Test the proxy by attempting to get auth status (this should work even without tokens)
-      const result = await window.api.realDebrid.getAuthStatus();
+      // Test the proxy by getting user info (this will test the full authentication chain)
+      const result = await window.api.realDebrid.getUserInfo();
       
-      if (result.success !== undefined) {
+      if (result.success) {
+        setRealDebridStatus({ 
+          connected: true, 
+          message: 'Cloud proxy and authentication working' 
+        });
         notifications.notifySuccess('Real-Debrid connection successful', {
           subtitle: 'Real-Debrid cloud proxy is working'
         });
-      } else if (result.error) {
-        notifications.notifyError('Real-Debrid API Error', {
-          subtitle: result.error
+      } else {
+        setRealDebridStatus({ 
+          connected: false, 
+          message: result.error || 'Connection failed' 
         });
+        if (result.error && result.error.includes('Service configuration error')) {
+          notifications.notifyError('Real-Debrid Configuration Error', {
+            subtitle: 'Real-Debrid API token not configured in cloud proxy'
+          });
+        } else {
+          notifications.notifyError('Real-Debrid API Error', {
+            subtitle: result.error
+          });
+        }
       }
     } catch (error) {
       console.error('Error testing Real-Debrid cloud proxy:', error);
+      setRealDebridStatus({ 
+        connected: false, 
+        message: 'Cloud proxy test failed' 
+      });
       notifications.notifyError('Cloud Proxy Error', {
         subtitle: error.message || 'Failed to connect to Real-Debrid cloud proxy'
       });
@@ -452,297 +320,115 @@ function SettingsPage({ onGameSelect }) {
         <h1 className="text-3xl font-bold mb-8">Settings</h1>
         
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
-          <h2 className="text-xl font-bold mb-4">Real-Debrid Connection</h2>
+          <h2 className="text-xl font-bold mb-4">Real-Debrid Service</h2>
           
-          {notifications.error && (
-            <div className="bg-red-900 text-white p-4 rounded-md mb-4">
-              <div className="flex items-start">
-                <svg className="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          <div className="flex items-center mb-4">
+            <div className={`w-3 h-3 rounded-full mr-3 ${realDebridStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <div>
+              <p className={`font-medium ${realDebridStatus.connected ? 'text-green-400' : 'text-red-400'}`}>
+                {realDebridStatus.connected ? 'Connected' : 'Disconnected'}
+              </p>
+              <p className="text-sm text-gray-400">{realDebridStatus.message}</p>
+            </div>
+          </div>
+          
+          <p className="mb-4 text-gray-300">
+            Real-Debrid is automatically configured through the cloud proxy. No manual authentication required.
+          </p>
+          
+          <button
+            onClick={testRealDebridProxy}
+            disabled={isTestingRealDebridProxy}
+            className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
+          >
+            {isTestingRealDebridProxy ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
+                Testing...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                 </svg>
-                <div>
-                  <p className="font-medium">{notifications.error.title}</p>
-                  <p className="text-sm mt-1">{notifications.error.subtitle}</p>
-                </div>
-              </div>
-            </div>
-          )}
+                Test Connection
+              </>
+            )}
+          </button>
+        </div>
+
+        <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
+          <h2 className="text-xl font-bold mb-4">IGDB Game Database</h2>
           
-          {!isConnecting && !isAuthenticated && (
+          <div className="flex items-center mb-4">
+            <div className={`w-3 h-3 rounded-full mr-3 ${igdbStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
             <div>
-              <p className="mb-4 text-gray-300">
-                Connect your Real-Debrid account to enable downloading games using Real-Debrid's premium services.
+              <p className={`font-medium ${igdbStatus.connected ? 'text-green-400' : 'text-red-400'}`}>
+                {igdbStatus.connected ? 'Connected' : 'Disconnected'}
               </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={handleStartAuthFlow}
-                  className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors duration-300"
-                >
-                  Connect to Real-Debrid
-                </button>
-                <button
-                  onClick={testRealDebridProxy}
-                  disabled={isTestingRealDebridProxy}
-                  className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
-                >
-                  {isTestingRealDebridProxy ? (
-                    <>
-                      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
-                      Testing...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                      </svg>
-                      Test Cloud Proxy
-                    </>
-                  )}
-                </button>
-              </div>
+              <p className="text-sm text-gray-400">{igdbStatus.message}</p>
             </div>
-          )}
+          </div>
           
-          {isConnecting && authFlow && (
-            <div>
-              <p className="mb-4 text-gray-300 text-center">
-                Authenticating with Real-Debrid...
-              </p>
-              <div className="bg-gray-700 p-6 rounded-lg mb-4">
-                <div className="text-center mb-4">
-                  <p className="text-lg font-bold text-blue-400 mb-2">
-                    Authentication Code
-                  </p>
-                  <div className="bg-gray-900 px-4 py-3 rounded-md border-2 border-blue-500 mb-4">
-                    <span className="text-2xl font-mono font-bold text-white tracking-wider">
-                      {authFlow.userCode}
-                    </span>
-                  </div>
-                  <p className="text-sm text-gray-400 mb-6">
-                    This code expires in {Math.floor(authFlow.expiresIn / 60)} minutes. 
-                    Take your time - the system will wait for you to complete the process.
-                  </p>
-                </div>
-                
-                <div className="space-y-4">
-                  <div className="flex items-start space-x-3">
-                    <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-bold flex-shrink-0 mt-0.5">1</div>
-                    <div>
-                      <p className="text-white font-medium">Open the verification page</p>
-                      <p className="text-sm text-gray-400">Click the button below to open Real-Debrid's verification page</p>
-                    </div>
-                  </div>
-                  
-                  <div className="flex items-start space-x-3">
-                    <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-bold flex-shrink-0 mt-0.5">2</div>
-                    <div>
-                      <p className="text-white font-medium">Enter the code above</p>
-                      <p className="text-sm text-gray-400">Copy and paste the code shown above into the verification page</p>
-                    </div>
-                  </div>
-                  
-                  <div className="flex items-start space-x-3">
-                    <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-bold flex-shrink-0 mt-0.5">3</div>
-                    <div>
-                      <p className="text-white font-medium">Authorize the application</p>
-                      <p className="text-sm text-gray-400">Follow the prompts on the Real-Debrid website to complete authorization</p>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="flex justify-center mt-6">
-                  <button
-                    onClick={openVerificationUrl}
-                    className="bg-green-600 hover:bg-green-700 text-white py-3 px-6 rounded-lg transition-colors duration-300 font-medium"
-                  >
-                    <svg className="w-5 h-5 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                    </svg>
-                    Open Verification Page
-                  </button>
-                </div>
-              </div>
-              <div className="flex items-center justify-center">
-                <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-blue-500 mr-3"></div>
-                <p className="text-sm text-gray-400">
-                  Waiting for authentication... (Checking every {currentPollInterval} seconds)
-                </p>
-              </div>
-            </div>
-          )}
+          <p className="mb-4 text-gray-300">
+            IGDB provides game information and metadata through our cloud proxy service.
+          </p>
           
-          {!isConnecting && isAuthenticated && userInfo && (
-            <div>
-              <div className="flex items-center mb-4">
-                <div className="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center mr-3">
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-green-400">Connected to Real-Debrid</p>
-                  <p className="text-sm text-gray-400">
-                    User: {userInfo.username} | Type: {userInfo.type} | Expiration: {new Date(userInfo.expiration).toLocaleDateString()}
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <button
-                  onClick={handleDisconnect}
-                  className="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md transition-colors duration-300"
-                >
-                  Disconnect
-                </button>
-                <button
-                  onClick={testRealDebridProxy}
-                  disabled={isTestingRealDebridProxy}
-                  className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
-                >
-                  {isTestingRealDebridProxy ? (
-                    <>
-                      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
-                      Testing...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                      </svg>
-                      Test Cloud Proxy
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          )}
+          <button
+            onClick={testIgdbConnection}
+            disabled={isTestingIgdb}
+            className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
+          >
+            {isTestingIgdb ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
+                Testing...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                Test Connection
+              </>
+            )}
+          </button>
         </div>
 
         {/* Download Location Settings */}
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">Download Location</h2>
           
-          <p className="text-gray-300 mb-4">
-            Set the default location where Real-Debrid will download your games. This folder will be used for all game downloads.
-          </p>
-
           <div className="mb-4">
-            <label className="block text-gray-300 mb-2">Download Folder</label>
-            <div className="flex gap-3">
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Downloads will be saved to:
+            </label>
+            <div className="flex gap-2">
               <input
                 type="text"
-                className="flex-1 bg-gray-700 text-white px-3 py-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Select a folder for downloads..."
                 value={downloadLocation}
                 onChange={(e) => setDownloadLocation(e.target.value)}
+                placeholder="Select download folder..."
+                className="flex-1 bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <button
                 onClick={handleBrowseDownloadLocation}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors duration-300 flex items-center"
+                className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md transition-colors duration-300"
               >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
-                </svg>
                 Browse
               </button>
             </div>
           </div>
-
-          <div className="flex justify-between items-center">
-            <button
-              onClick={handleSaveDownloadLocation}
-              disabled={isSavingDownloadLocation}
-              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md transition-colors duration-300 disabled:opacity-50"
-            >
-              {isSavingDownloadLocation ? 'Saving...' : 'Save Download Location'}
-            </button>
-            
-            {downloadLocation && (
-              <div className="text-sm text-gray-400">
-                Current: {downloadLocation}
-              </div>
-            )}
-          </div>
-
-          <div className="mt-4 p-3 bg-gray-700 rounded">
-            <h4 className="font-medium text-gray-200 mb-2">Important Notes:</h4>
-            <ul className="text-gray-300 text-sm space-y-1">
-              <li>• Make sure the selected folder has enough free space for game downloads</li>
-              <li>• The folder should be easily accessible and have write permissions</li>
-              <li>• Games can be quite large (10-100+ GB), so choose a location with adequate storage</li>
-              <li>• You can change this location at any time</li>
-            </ul>
-          </div>
+          
+          <button
+            onClick={handleSaveDownloadLocation}
+            disabled={isSavingDownloadLocation}
+            className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors duration-300 disabled:opacity-50"
+          >
+            {isSavingDownloadLocation ? 'Saving...' : 'Save Location'}
+          </button>
         </div>
-        
-        {/* IGDB Game Database Status */}
-        <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
-          <h2 className="text-xl font-bold mb-4">IGDB Game Database</h2>
-          
-          <div className="flex items-center mb-4">
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center mr-3 ${igdbStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}>
-              {igdbStatus.connected ? (
-                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
-                </svg>
-              ) : (
-                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
-                </svg>
-              )}
-            </div>
-            <div>
-              <p className={`font-medium ${igdbStatus.connected ? 'text-green-400' : 'text-red-400'}`}>
-                {igdbStatus.connected ? 'Connected to IGDB' : 'IGDB Connection Failed'}
-              </p>
-              <p className="text-sm text-gray-400">{igdbStatus.message}</p>
-            </div>
-          </div>
-          
-          <div className="flex gap-3 mb-4">
-            <button
-              onClick={testIgdbConnection}
-              disabled={isTestingIgdb}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
-            >
-              {isTestingIgdb ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
-                  Testing...
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                  </svg>
-                  Test Connection
-                </>
-              )}
-            </button>
-          </div>
-          
-          <div className="mt-4 p-4 bg-gray-700 rounded-md">
-            <p className="text-gray-300 text-sm mb-2">
-              The game database connection is managed automatically through our secure cloud service. 
-              {igdbStatus.connected 
-                ? ' The connection is working properly and you can browse games normally.'
-                : ' If you\'re experiencing issues, try testing the connection or check your internet connection.'
-              }
-            </p>
-            {!igdbStatus.connected && (
-              <div className="mt-3 p-3 bg-red-900 border border-red-700 rounded">
-                <p className="text-red-300 text-sm">
-                  <strong>Troubleshooting:</strong> If the connection test fails, this might indicate issues with:
-                </p>
-                <ul className="text-red-300 text-sm mt-2 ml-4 list-disc">
-                  <li>Internet connectivity</li>
-                  <li>Firewall blocking the application</li>
-                  <li>Temporary cloud service issues</li>
-                </ul>
-              </div>
-            )}
-          </div>
-        </div>
-        
+
         {/* Jackett Settings */}
         <div className="bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <h2 className="text-xl font-bold mb-4">Jackett Integration (Optional)</h2>

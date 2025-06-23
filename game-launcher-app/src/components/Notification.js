@@ -189,12 +189,33 @@ const Notification = ({ notification }) => {
         )}
         
         {/* Progress bar for downloads */}
-        {notification.progress !== undefined && (
-          <div className="mt-2 w-full bg-white bg-opacity-25 rounded-full h-2">
-            <div 
-              className="bg-white h-2 rounded-full transition-all duration-300"
-              style={{ width: `${notification.progress}%` }}
-            />
+        {notification.type === NOTIFICATION_TYPES.DOWNLOAD && notification.progress !== undefined && (
+          <div className="mt-2">
+            <div className="w-full bg-white bg-opacity-25 rounded-full h-2 overflow-hidden">
+              <div 
+                className="bg-white h-2 rounded-full transition-all duration-300 ease-out"
+                style={{ width: `${Math.min(100, Math.max(0, notification.progress))}%` }}
+              />
+            </div>
+            {notification.downloadInfo && (
+              <div className="flex justify-between text-xs mt-1 opacity-75">
+                <span>{notification.downloadInfo.speed || ''}</span>
+                <span>{notification.downloadInfo.eta || ''}</span>
+              </div>
+            )}
+          </div>
+        )}
+        
+        {/* Status indicator for game downloads */}
+        {notification.gameDownloadStatus && (
+          <div className="mt-2 flex items-center space-x-2">
+            <div className={`w-2 h-2 rounded-full animate-pulse ${
+              notification.gameDownloadStatus === 'downloading' ? 'bg-blue-400' :
+              notification.gameDownloadStatus === 'complete' ? 'bg-green-400' :
+              notification.gameDownloadStatus === 'error' ? 'bg-red-400' :
+              'bg-yellow-400'
+            }`}></div>
+            <span className="text-xs opacity-75">{notification.statusText || notification.gameDownloadStatus}</span>
           </div>
         )}
       </div>

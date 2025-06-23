@@ -11,10 +11,10 @@ class GameExtractionService {
     this.activeExtractions = new Map();
     this.tempDirectory = '';
     this.setupIpcHandlers();
-    this.initializeTempDirectory();
+    this.initializeTempDirectorySync();
   }
 
-  async initializeTempDirectory() {
+  initializeTempDirectorySync() {
     try {
       const { app } = require('electron');
       const os = require('os');

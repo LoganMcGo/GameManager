@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNotifications } from '../context/NotificationContext';
 import { createNotificationHandlers } from '../services/notificationService';
-import torrentService from '../services/torrentService';
+import gameFinderService from '../services/gameFinderService';
 
 const GameDownloadManager = ({ selectedGame, onClose }) => {
   const [searchResults, setSearchResults] = useState([]);
@@ -20,7 +20,16 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
   const checkServiceHealth = async () => {
     await notifications.withNotifications(
       async () => {
-        const health = await torrentService.checkServiceHealth();
+        const health = {
+          realDebrid: true, // Since it's automatic now
+          jackett: false,
+          bitmagnet: false
+        };
+        
+        // Check Jackett status
+        const jackettStatus = await gameFinderService.getJackettStatus();
+        health.jackett = jackettStatus.connected;
+        
         setServiceHealth(health);
         return health;
       },
@@ -39,25 +48,27 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
 
     await notifications.withNotifications(
       async () => {
-        console.log(`🔍 Searching DHT for: ${gameName}`);
-        const results = await torrentService.searchGameTorrents(gameName, {
-          autoAddToRealDebrid: false,
-          limit: 15
-        });
-
-        setSearchResults(results);
+        console.log(`🔍 Searching for: ${gameName}`);
+        const result = await gameFinderService.searchTorrents(gameName);
         
-        if (results.length === 0) {
-          notifications.notifyWarning('No torrents found', {
-            subtitle: `No game torrents found for "${gameName}". Try a different search term.`
-          });
+        if (result.success) {
+          setSearchResults(result.data || []);
+          
+          if (result.data.length === 0) {
+            notifications.notifyWarning('No torrents found', {
+              subtitle: `No game torrents found for "${gameName}". Try a different search term.`
+            });
+          } else {
+            notifications.notifySuccess('Search completed', {
+              subtitle: `Found ${result.data.length} torrents for "${gameName}"`
+            });
+          }
         } else {
-          notifications.notifySuccess('Search completed', {
-            subtitle: `Found ${results.length} torrents for "${gameName}"`
-          });
+          setSearchResults([]);
+          throw new Error(result.error || 'Search failed');
         }
         
-        return results;
+        return result;
       },
       {
         errorMessage: {
@@ -73,24 +84,58 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
   const downloadGame = async (torrent) => {
     setIsDownloading(true);
 
-    await notifications.withDownloadNotifications(
-      async ({ onProgress }) => {
-        // Simulate progress for Real-Debrid addition
-        onProgress(10, 'Adding torrent to Real-Debrid...');
+    await notifications.withNotifications(
+      async () => {
+        // Start tracking the download
+        const downloadId = await window.api.downloadTracker.startTracking({
+          game: selectedGame,
+          magnetLink: torrent.magnet || torrent.url,
+          torrentName: torrent.title || torrent.name
+        });
         
-        const result = await torrentService.addToRealDebrid(torrent);
+        // Create a notification for this download
+        const notificationId = notifications.notifyDownload(`Starting download: ${selectedGame.name}`, {
+          progress: 0,
+          subtitle: 'Adding to Real-Debrid...',
+          autoRemove: false
+        });
         
-        onProgress(100, 'Successfully added to Real-Debrid!');
+        // Add to Real-Debrid
+        const result = await gameFinderService.addToRealDebrid(torrent);
         
-        // Auto-close after success
-        setTimeout(() => {
-          onClose?.();
-        }, 2000);
+        if (result.success) {
+          // Update notification
+          notifications.updateNotification(notificationId, {
+            message: `Download started: ${selectedGame.name}`,
+            progress: 10,
+            subtitle: 'Processing with Real-Debrid...',
+            autoRemove: true,
+            duration: 5000
+          });
+          
+          // Update tracking with torrent ID
+          if (result.data?.id) {
+            await window.api.downloadTracker.updateStatus(downloadId, 'starting_torrent', {
+              torrentId: result.data.id
+            });
+          }
+          
+          // Auto-close after success
+          setTimeout(() => {
+            onClose?.();
+          }, 2000);
+        } else {
+          throw new Error(result.error || 'Failed to add to Real-Debrid');
+        }
         
         return result;
       },
       {
-        downloadName: torrent.name,
+        showError: true,
+        errorMessage: {
+          title: 'Download failed',
+          subtitle: 'Could not add torrent to Real-Debrid'
+        },
         onSuccess: () => setIsDownloading(false),
         onError: () => setIsDownloading(false)
       }
@@ -102,27 +147,77 @@ const GameDownloadManager = ({ selectedGame, onClose }) => {
     
     setIsDownloading(true);
 
-    await notifications.withDownloadNotifications(
-      async ({ onProgress }) => {
-        onProgress(0, 'Searching for best torrent...');
+    await notifications.withNotifications(
+      async () => {
+        // Create a notification for this download
+        const notificationId = notifications.notifyDownload(`Quick downloading: ${selectedGame.name}`, {
+          progress: 0,
+          subtitle: 'Searching for best torrent...',
+          autoRemove: false
+        });
         
-        const result = await torrentService.quickGameDownload(selectedGame.name);
+        // Search for torrents
+        const searchResult = await gameFinderService.searchTorrents(selectedGame.name);
         
-        onProgress(50, 'Found torrent, adding to Real-Debrid...');
+        if (!searchResult.success || searchResult.data.length === 0) {
+          throw new Error('No torrents found for this game');
+        }
         
-        // Give it a moment to process
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Get the best torrent (first one since they're sorted by quality)
+        const bestTorrent = searchResult.data[0];
         
-        onProgress(100, 'Successfully added to Real-Debrid!');
+        notifications.updateNotification(notificationId, {
+          progress: 30,
+          subtitle: `Found torrent: ${bestTorrent.title}`
+        });
         
-        setTimeout(() => {
-          onClose?.();
-        }, 2000);
+        // Start tracking
+        const downloadId = await window.api.downloadTracker.startTracking({
+          game: selectedGame,
+          magnetLink: bestTorrent.magnet || bestTorrent.url,
+          torrentName: bestTorrent.title || bestTorrent.name
+        });
+        
+        // Add to Real-Debrid
+        notifications.updateNotification(notificationId, {
+          progress: 50,
+          subtitle: 'Adding to Real-Debrid...'
+        });
+        
+        const result = await gameFinderService.addToRealDebrid(bestTorrent);
+        
+        if (result.success) {
+          notifications.updateNotification(notificationId, {
+            message: `Download started: ${selectedGame.name}`,
+            progress: 100,
+            subtitle: 'Successfully added to Real-Debrid!',
+            type: 'success',
+            autoRemove: true,
+            duration: 5000
+          });
+          
+          // Update tracking with torrent ID
+          if (result.data?.id) {
+            await window.api.downloadTracker.updateStatus(downloadId, 'starting_torrent', {
+              torrentId: result.data.id
+            });
+          }
+          
+          setTimeout(() => {
+            onClose?.();
+          }, 2000);
+        } else {
+          throw new Error(result.error || 'Failed to add to Real-Debrid');
+        }
         
         return result;
       },
       {
-        downloadName: selectedGame.name,
+        showError: true,
+        errorMessage: {
+          title: 'Quick download failed',
+          subtitle: 'Could not complete the download'
+        },
         onSuccess: () => setIsDownloading(false),
         onError: () => setIsDownloading(false)
       }

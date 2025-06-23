@@ -12,11 +12,8 @@ contextBridge.exposeInMainWorld(
     
     // Real-Debrid API
     realDebrid: {
-      // Authentication
+      // Status (always returns authenticated since it's automatic)
       getAuthStatus: () => ipcRenderer.invoke('real-debrid:get-auth-status'),
-      startAuthFlow: () => ipcRenderer.invoke('real-debrid:start-auth-flow'),
-      checkAuthStatus: () => ipcRenderer.invoke('real-debrid:check-auth-status'),
-      disconnect: () => ipcRenderer.invoke('real-debrid:disconnect'),
       
       // User API
       getUserInfo: () => ipcRenderer.invoke('real-debrid:get-user-info'),
@@ -51,58 +48,106 @@ contextBridge.exposeInMainWorld(
     
     // IGDB API
     igdb: {
-      getCredentials: () => ipcRenderer.invoke('igdb:get-credentials'),
-      setCredentials: (clientId, clientSecret) => ipcRenderer.invoke('igdb:set-credentials', clientId, clientSecret),
-      testCredentials: (clientId, clientSecret) => ipcRenderer.invoke('igdb:test-credentials', clientId, clientSecret),
-      getPopularNewGames: (limit, offset) => ipcRenderer.invoke('igdb:get-popular-new-games', limit, offset),
-      getGamesByGenre: (genre, limit, offset, subCategory) => ipcRenderer.invoke('igdb:get-games-by-genre', genre, limit, offset, subCategory),
-      getFeaturedGames: (limit) => ipcRenderer.invoke('igdb:get-featured-games', limit),
+      searchGames: (query, limit = 20) => ipcRenderer.invoke('igdb:search-games', query, limit),
       getGameDetails: (gameId) => ipcRenderer.invoke('igdb:get-game-details', gameId),
-      searchGames: (query, limit) => ipcRenderer.invoke('igdb:search-games', query, limit)
+      getPopularGames: (limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-popular-games', limit, offset),
+      getTopRatedGames: (limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-top-rated-games', limit, offset),
+      getRecentGames: (limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-recent-games', limit, offset),
+      getUpcomingGames: (limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-upcoming-games', limit, offset),
+      getGamesByGenre: (genreId, limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-games-by-genre', genreId, limit, offset),
+      getGamesByPlatform: (platformId, limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-games-by-platform', platformId, limit, offset),
+      getGenres: () => ipcRenderer.invoke('igdb:get-genres'),
+      getPlatforms: () => ipcRenderer.invoke('igdb:get-platforms'),
+      getCompanies: () => ipcRenderer.invoke('igdb:get-companies'),
+      getPopularNewGames: (limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-popular-new-games', limit, offset),
+      getTrendingGames: (limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-trending-games', limit, offset),
+      getGameScreenshots: (gameId) => ipcRenderer.invoke('igdb:get-game-screenshots', gameId),
+      getSimilarGames: (gameId, limit = 10) => ipcRenderer.invoke('igdb:get-similar-games', gameId, limit),
+      getGamesByCompany: (companyId, limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-games-by-company', companyId, limit, offset),
+      getMultipleGames: (gameIds) => ipcRenderer.invoke('igdb:get-multiple-games', gameIds),
+      searchAllGames: (query, limit = 50, offset = 0) => ipcRenderer.invoke('igdb:search-all-games', query, limit, offset),
+      getGameCollection: (collectionId) => ipcRenderer.invoke('igdb:get-game-collection', collectionId),
+      getFranchises: () => ipcRenderer.invoke('igdb:get-franchises'),
+      getGamesByFranchise: (franchiseId, limit = 20, offset = 0) => ipcRenderer.invoke('igdb:get-games-by-franchise', franchiseId, limit, offset)
     },
     
-    // Download API
+    // Download Service API
     download: {
       startDownload: (downloadInfo) => ipcRenderer.invoke('download:start', downloadInfo),
-      startDownloadWithExtraction: (downloadInfo) => ipcRenderer.invoke('download:start-with-extraction', downloadInfo),
       pauseDownload: (downloadId) => ipcRenderer.invoke('download:pause', downloadId),
       resumeDownload: (downloadId) => ipcRenderer.invoke('download:resume', downloadId),
       cancelDownload: (downloadId) => ipcRenderer.invoke('download:cancel', downloadId),
-      getDownloadStatus: (downloadId) => ipcRenderer.invoke('download:status', downloadId),
-      getActiveDownloads: () => ipcRenderer.invoke('download:get-active'),
-      setDownloadLocation: (location) => ipcRenderer.invoke('download:set-location', location),
+      getDownloads: () => ipcRenderer.invoke('download:get-all'),
+      clearCompleted: () => ipcRenderer.invoke('download:clear-completed'),
       getDownloadLocation: () => ipcRenderer.invoke('download:get-location'),
-      openDownloadLocation: () => ipcRenderer.invoke('download:open-location')
-    },
-
-    // Game Extraction API
-    extraction: {
-      extractFile: (extractionInfo) => ipcRenderer.invoke('extraction:extract-file', extractionInfo),
-      getExtractionStatus: (extractionId) => ipcRenderer.invoke('extraction:get-status', extractionId),
-      cancelExtraction: (extractionId) => ipcRenderer.invoke('extraction:cancel', extractionId),
-      needsExtraction: (filePath) => ipcRenderer.invoke('extraction:needs-extraction', filePath),
-      installGame: (installInfo) => ipcRenderer.invoke('extraction:install-game', installInfo),
-      cleanTempDirectory: () => ipcRenderer.invoke('extraction:clean-temp')
-    },
-
-    // Game Launcher API
-    launcher: {
-      launchGame: (gameInfo) => ipcRenderer.invoke('launcher:launch-game', gameInfo),
-      stopGame: (gameId) => ipcRenderer.invoke('launcher:stop-game', gameId),
-      getGameStatus: (gameId) => ipcRenderer.invoke('launcher:get-game-status', gameId),
-      getRunningGames: () => ipcRenderer.invoke('launcher:get-running-games'),
-      findExecutable: (gameInfo) => ipcRenderer.invoke('launcher:find-executable', gameInfo),
-      scanDirectory: (directoryPath) => ipcRenderer.invoke('launcher:scan-directory', directoryPath),
-      setExecutablePath: (gameId, executablePath) => ipcRenderer.invoke('launcher:set-executable-path', gameId, executablePath),
-      isGameReady: (gameInfo) => ipcRenderer.invoke('launcher:is-game-ready', gameInfo)
+      setDownloadLocation: (path) => ipcRenderer.invoke('download:set-location', path),
+      retryDownload: (downloadId) => ipcRenderer.invoke('download:retry', downloadId),
+      getDownloadHistory: () => ipcRenderer.invoke('download:get-history'),
+      onDownloadUpdate: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download:update', wrappedCallback);
+        return () => ipcRenderer.removeListener('download:update', wrappedCallback);
+      },
+      onDownloadComplete: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download:complete', wrappedCallback);
+        return () => ipcRenderer.removeListener('download:complete', wrappedCallback);
+      },
+      onDownloadError: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download:error', wrappedCallback);
+        return () => ipcRenderer.removeListener('download:error', wrappedCallback);
+      }
     },
     
-    // Window controls
-    window: {
-      minimize: () => ipcRenderer.invoke('window:minimize'),
-      maximize: () => ipcRenderer.invoke('window:maximize'),
-      close: () => ipcRenderer.invoke('window:close'),
-      isMaximized: () => ipcRenderer.invoke('window:is-maximized')
+    // Game Download Tracker API
+    downloadTracker: {
+      getDownloads: () => ipcRenderer.invoke('download-tracker:get-downloads'),
+      removeDownload: (downloadId) => ipcRenderer.invoke('download-tracker:remove-download', downloadId),
+      clearCompleted: () => ipcRenderer.invoke('download-tracker:clear-completed'),
+      startTracking: (trackingData) => ipcRenderer.invoke('download-tracker:start-tracking', trackingData),
+      updateStatus: (downloadId, status, data) => ipcRenderer.invoke('download-tracker:update-status', downloadId, status, data),
+      onDownloadUpdate: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download-tracker:update', wrappedCallback);
+        return () => ipcRenderer.removeListener('download-tracker:update', wrappedCallback);
+      }
+    },
+    
+    // Game Library API
+    library: {
+      addGame: (gameData) => ipcRenderer.invoke('library:add-game', gameData),
+      removeGame: (gameId) => ipcRenderer.invoke('library:remove-game', gameId),
+      getGames: () => ipcRenderer.invoke('library:get-games'),
+      updateGame: (gameId, updates) => ipcRenderer.invoke('library:update-game', gameId, updates),
+      launchGame: (gameId) => ipcRenderer.invoke('library:launch-game', gameId),
+      importGame: (gamePath) => ipcRenderer.invoke('library:import-game', gamePath),
+      getGameHistory: () => ipcRenderer.invoke('library:get-history'),
+      markGameAsPlayed: (gameId) => ipcRenderer.invoke('library:mark-played', gameId)
+    },
+    
+    // App API  
+    app: {
+      getVersion: () => ipcRenderer.invoke('app:get-version'),
+      checkForUpdates: () => ipcRenderer.invoke('app:check-updates'),
+      installUpdate: () => ipcRenderer.invoke('app:install-update'),
+      onUpdateAvailable: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('update-available', wrappedCallback);
+        return () => ipcRenderer.removeListener('update-available', wrappedCallback);
+      },
+      onUpdateDownloaded: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('update-downloaded', wrappedCallback);
+        return () => ipcRenderer.removeListener('update-downloaded', wrappedCallback);
+      }
+    },
+    
+    // System API
+    system: {
+      openExternal: (url) => ipcRenderer.invoke('system:open-external', url),
+      showItemInFolder: (path) => ipcRenderer.invoke('system:show-item-in-folder', path),
+      getSystemInfo: () => ipcRenderer.invoke('system:get-info')
     }
   }
 );

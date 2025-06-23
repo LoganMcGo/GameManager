@@ -6,9 +6,8 @@ import WelcomeScreen from './pages/WelcomeScreen';
 import SettingsPage from './pages/SettingsPage';
 import CategoryPage from './pages/CategoryPage';
 import GameDetailView from './components/GameDetailView';
-import RealDebridManager from './components/RealDebridManager';
+import GameDownloadsManager from './components/RealDebridManager';
 import Library from './components/Library';
-import DownloadProgress from './components/DownloadProgress';
 import NotificationContainer from './components/NotificationContainer';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { IgdbProvider, useIgdb } from './context/IgdbContext';
@@ -181,7 +180,7 @@ function AppContent() {
         {currentPage === 'home' && <MainContent onNavigate={handleNavigate} onGameSelect={handleGameSelect} />}
         {currentPage === 'library' && <Library onGameSelect={handleGameSelect} />}
         {currentPage === 'settings' && <SettingsPage onGameSelect={handleGameSelect} />}
-        {currentPage === 'downloads' && <RealDebridManager onGameSelect={handleGameSelect} />}
+        {currentPage === 'downloads' && <GameDownloadsManager onGameSelect={handleGameSelect} />}
         {currentPage === 'game-detail' && selectedGame && (
           <GameDetailView 
             game={gameDetails || selectedGame}
@@ -198,9 +197,6 @@ function AppContent() {
           />
         )}
       </div>
-
-      {/* Global Download Progress Component */}
-      <DownloadProgress />
 
       {/* Global Notification Container */}
       <NotificationContainer />

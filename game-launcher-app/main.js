@@ -1,5 +1,5 @@
-// Force CommonJS mode and handle module loading errors
-process.env.NODE_OPTIONS = '--no-experimental-modules';
+// Fix for ESM loading issues with newer Electron versions
+// Removed outdated --no-experimental-modules flag that causes warnings in newer Electron versions
 
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
@@ -10,6 +10,7 @@ const { initGameDownloadService } = require('./src/services/gameDownloadService'
 const { initJwtService } = require('./src/services/jwtService');
 const { initGameExtractionService } = require('./src/services/gameExtractionService');
 const { initGameLauncherService } = require('./src/services/gameLauncherService');
+const { initGameDownloadTracker } = require('./src/services/gameDownloadTracker');
 const { autoUpdater } = require('electron-updater');
 
 // Keep a global reference of the window object to prevent it from being garbage collected
@@ -35,12 +36,7 @@ function createWindow() {
     autoHideMenuBar: true, // Hide the menu bar
     frame: false, // Remove the window frame (including file and edit buttons)
     resizable: true,     // Ensure window is resizable
-    show: false          // Don't show window until ready
-  });
-
-  // Show window when ready to prevent visual flash
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    show: false          // Don't show window until services are ready
   });
 
   // Prevent zoom with Ctrl+Scroll and keyboard shortcuts
@@ -174,24 +170,52 @@ function setupDialogHandlers() {
 }
 
 // Initialize services and handle cleanup
-function initializeServices() {
+async function initializeServices() {
   console.log('🚀 Initializing Game Manager Services...');
   
-  // Initialize core services
-  initJwtService();
-  initRealDebridService();
-  initIgdbService();
-  
-  // Initialize download service (for handling file downloads)
-  global.gameDownloadService = initGameDownloadService();
-  
-  // Initialize game extraction service
-  global.extractionService = initGameExtractionService();
-  
-  // Initialize game launcher service
-  global.launcherService = initGameLauncherService();
+  try {
+    // Initialize core services with proper error handling
+    console.log('🔑 Initializing JWT service...');
+    initJwtService();
+    
+    console.log('🔄 Initializing Real-Debrid service...');
+    initRealDebridService();
+    
+    console.log('🎮 Initializing IGDB service...');
+    initIgdbService();
+    
+    console.log('📊 Initializing download tracker...');
+    initGameDownloadTracker();
+    
+    console.log('⬇️ Initializing download service...');
+    global.gameDownloadService = initGameDownloadService();
+    
+    console.log('🗜️ Initializing extraction service...');
+    global.extractionService = initGameExtractionService();
+    
+    console.log('🚀 Initializing launcher service...');
+    global.launcherService = initGameLauncherService();
 
-  console.log('✅ All services initialized successfully');
+    // Give services a moment to complete any async initialization
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    console.log('✅ All services initialized successfully');
+    
+    // Show the window after services are ready
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      console.log('🖼️ Window shown - app ready!');
+    }
+    
+  } catch (error) {
+    console.error('❌ Failed to initialize services:', error);
+    
+    // Show window with error state rather than hanging
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      console.log('🖼️ Window shown with service errors');
+    }
+  }
 }
 
 // Handle app cleanup
@@ -261,7 +285,7 @@ app.commandLine.appendSwitch('--disable-features', 'OutOfBlinkCors');
 app.commandLine.appendSwitch('--disable-web-security');
 
 // Create window and initialize services when Electron has finished initialization
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Register custom protocol handler for file:// URLs
   const { protocol } = require('electron');
   
@@ -273,7 +297,23 @@ app.whenReady().then(() => {
   createWindow();
   setupWindowControls();
   setupDialogHandlers();
-  initializeServices();
+  
+  // Initialize services asynchronously and show window when ready
+  // Add timeout fallback to ensure window shows even if services hang
+  const serviceInitPromise = initializeServices();
+  const timeoutPromise = new Promise(resolve => {
+    setTimeout(() => {
+      console.warn('⚠️ Service initialization timeout - showing window anyway');
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+        mainWindow.show();
+        console.log('🖼️ Window shown via timeout fallback');
+      }
+      resolve();
+    }, 10000); // 10 second timeout
+  });
+  
+  // Race between service initialization and timeout
+  await Promise.race([serviceInitPromise, timeoutPromise]);
 });
 
 // Quit when all windows are closed, except on macOS

@@ -1,5 +1,5 @@
 const axios = require('axios');
-const Store = require('electron-store').default || require('electron-store');
+const Store = require('electron-store');
 const { ipcMain } = require('electron');
 const os = require('os');
 const crypto = require('crypto');

@@ -4,8 +4,9 @@ const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
 
 const secretClient = new SecretManagerServiceClient();
 
-// Cache for JWT secret to avoid repeated Secret Manager calls
+// Cache for JWT secret and Real-Debrid API token
 let jwtSecret = null;
+let realDebridApiToken = null;
 
 /**
  * Get JWT secret from Secret Manager (cached)
@@ -26,6 +27,28 @@ async function getJwtSecret() {
   } catch (error) {
     console.error('Failed to get JWT secret:', error);
     throw new Error('Authentication configuration error');
+  }
+}
+
+/**
+ * Get Real-Debrid API token from Secret Manager (cached)
+ */
+async function getRealDebridApiToken() {
+  if (realDebridApiToken) {
+    return realDebridApiToken;
+  }
+  
+  try {
+    const projectId = process.env.GOOGLE_CLOUD_PROJECT || 'gamemanagerproxy';
+    const [version] = await secretClient.accessSecretVersion({
+      name: `projects/${projectId}/secrets/real-debrid-apikey/versions/latest`,
+    });
+    
+    realDebridApiToken = version.payload.data.toString();
+    return realDebridApiToken;
+  } catch (error) {
+    console.error('Failed to get Real-Debrid API token:', error);
+    throw new Error('Real-Debrid API token not configured');
   }
 }
 
@@ -73,15 +96,16 @@ function extractToken(req) {
 }
 
 /**
- * Make request to Real-Debrid API
+ * Make request to Real-Debrid API using stored personal API token
  */
 async function makeRealDebridRequest(endpoint, options = {}) {
+  const apiToken = await getRealDebridApiToken();
   const baseUrl = 'https://api.real-debrid.com/rest/1.0';
   const url = `${baseUrl}${endpoint}`;
   
   let body = undefined;
   let headers = {
-    'Authorization': options.headers?.Authorization,
+    'Authorization': `Bearer ${apiToken}`,
     ...options.headers
   };
   
@@ -115,7 +139,19 @@ async function makeRealDebridRequest(endpoint, options = {}) {
   
   const contentType = response.headers.get('content-type');
   if (contentType && contentType.includes('application/json')) {
-    return await response.json();
+    const responseText = await response.text();
+    
+    // Handle empty responses
+    if (!responseText || responseText.trim() === '') {
+      return []; // Return empty array for empty downloads list
+    }
+    
+    try {
+      return JSON.parse(responseText);
+    } catch (error) {
+      console.error('Failed to parse JSON response:', responseText);
+      throw new Error('Invalid JSON response from Real-Debrid API');
+    }
   } else {
     return await response.text();
   }
@@ -135,16 +171,10 @@ functions.http('realDebridProxy', async (req, res) => {
     
     // Verify JWT token
     const token = extractToken(req);
-    await verifyToken(token);
+    const decoded = await verifyToken(token);
     
-    // Extract Real-Debrid API token from request
-    const { apiToken, endpoint, method = 'GET', body, contentType } = req.body;
-    
-    if (!apiToken) {
-      return res.status(400).json({
-        error: 'Missing Real-Debrid API token'
-      });
-    }
+    // Extract request parameters (no apiToken needed - using stored token)
+    const { endpoint, method = 'GET', body, contentType } = req.body;
     
     if (!endpoint) {
       return res.status(400).json({
@@ -153,13 +183,11 @@ functions.http('realDebridProxy', async (req, res) => {
     }
     
     console.log(`Proxying Real-Debrid request: ${method} ${endpoint}`, contentType ? `(${contentType})` : '');
+    console.log(`Machine ID: ${decoded.machine_id}`);
     
-    // Make request to Real-Debrid API
+    // Make request to Real-Debrid API using stored personal API token
     const result = await makeRealDebridRequest(endpoint, {
       method,
-      headers: {
-        'Authorization': `Bearer ${apiToken}`
-      },
       body,
       contentType
     });
@@ -184,6 +212,9 @@ functions.http('realDebridProxy', async (req, res) => {
     } else if (error.message.includes('Real-Debrid API error')) {
       statusCode = 502;
       errorMessage = 'Real-Debrid API error';
+    } else if (error.message.includes('Real-Debrid API token not configured')) {
+      statusCode = 503;
+      errorMessage = 'Service configuration error';
     }
     
     res.status(statusCode).json({

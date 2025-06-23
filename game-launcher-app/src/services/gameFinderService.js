@@ -840,6 +840,43 @@ class GameFinderService {
     return score;
   }
 
+  // Download a game (finds best torrent and adds to Real-Debrid)
+  async downloadGame(gameName) {
+    try {
+      console.log(`📦 Starting download for: ${gameName}`);
+
+      // Search for torrents
+      const searchResult = await this.searchTorrents(gameName);
+      
+      if (!searchResult.success || searchResult.data.length === 0) {
+        return {
+          success: false,
+          error: 'No torrents found for this game'
+        };
+      }
+
+      // Get the best torrent (first one since they're sorted by quality)
+      const bestTorrent = searchResult.data[0];
+      
+      console.log(`✅ Found best torrent: ${bestTorrent.title} (Quality: ${bestTorrent.quality})`);
+
+      // Add to Real-Debrid
+      const result = await this.addToRealDebrid({
+        magnet: bestTorrent.magnet || bestTorrent.url,
+        name: bestTorrent.title || gameName
+      });
+      
+      return result;
+
+    } catch (error) {
+      console.error(`❌ Download failed for ${gameName}:`, error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   // Download a specific torrent magnet link
   async downloadTorrent(magnetLink, torrentName = 'Game') {
     try {
