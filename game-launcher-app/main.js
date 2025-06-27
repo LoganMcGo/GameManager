@@ -174,7 +174,7 @@ async function initializeServices() {
   console.log('🚀 Initializing Game Manager Services...');
   
   try {
-    // Initialize core services with proper error handling
+    // Initialize core services - these should be fast
     console.log('🔑 Initializing JWT service...');
     initJwtService();
     
@@ -196,19 +196,23 @@ async function initializeServices() {
     console.log('🚀 Initializing launcher service...');
     global.launcherService = initGameLauncherService();
 
-    // Give services a moment to complete any async initialization
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Give core services a moment to complete any sync initialization
+    await new Promise(resolve => setTimeout(resolve, 500));
 
-    console.log('✅ All services initialized successfully');
+    console.log('✅ Core services initialized successfully');
     
-    // Show the window after services are ready
+    // Show the window after core services are ready
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
       console.log('🖼️ Window shown - app ready!');
     }
     
+    // Continue with any async initialization in the background
+    // This won't block the window from showing
+    console.log('🔄 Starting background service initialization...');
+    
   } catch (error) {
-    console.error('❌ Failed to initialize services:', error);
+    console.error('❌ Failed to initialize core services:', error);
     
     // Show window with error state rather than hanging
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -299,7 +303,7 @@ app.whenReady().then(async () => {
   setupDialogHandlers();
   
   // Initialize services asynchronously and show window when ready
-  // Add timeout fallback to ensure window shows even if services hang
+  // Add shorter timeout fallback to ensure window shows if services hang
   const serviceInitPromise = initializeServices();
   const timeoutPromise = new Promise(resolve => {
     setTimeout(() => {
@@ -309,7 +313,7 @@ app.whenReady().then(async () => {
         console.log('🖼️ Window shown via timeout fallback');
       }
       resolve();
-    }, 10000); // 10 second timeout
+    }, 3000); // 3 second timeout (reduced from 10 seconds)
   });
   
   // Race between service initialization and timeout

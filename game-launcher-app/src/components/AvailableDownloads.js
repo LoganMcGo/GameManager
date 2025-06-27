@@ -4,13 +4,13 @@ import { useLibrary } from '../context/LibraryContext';
 import gameFinderService from '../services/gameFinderService';
 
 function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
-  const { isAuthenticated } = useAuth();
   const { addToLibrary } = useLibrary();
   const [downloads, setDownloads] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searchPerformed, setSearchPerformed] = useState(false);
   const [downloadingItems, setDownloadingItems] = useState(new Set());
+  const [realDebridError, setRealDebridError] = useState(null);
 
   // Search for downloads when component mounts or game changes
   useEffect(() => {
@@ -47,13 +47,9 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
 
   // Download torrent directly using magnet link
   const handleDownload = async (downloadItem) => {
-    if (!isAuthenticated) {
-      setError('Please connect to Real-Debrid first to download torrents.');
-      return;
-    }
-
     const itemId = downloadItem.url + downloadItem.source;
     setDownloadingItems(prev => new Set([...prev, itemId]));
+    setRealDebridError(null);
 
     try {
       console.log(`📦 Adding magnet to Real-Debrid: ${downloadItem.title}`);
@@ -71,6 +67,7 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
       if (addResponse.success) {
         console.log('✅ Successfully added magnet to Real-Debrid');
         setError(null);
+        setRealDebridError(null);
         
         // Automatically add game to library if game object is provided
         if (game) {
@@ -102,7 +99,17 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
       }
     } catch (err) {
       console.error('❌ Error downloading:', err);
-      setError('Error downloading: ' + err.message);
+      const errorMessage = err.message;
+      
+      // Check if this is a Real-Debrid connection issue
+      if (errorMessage.includes('Real-Debrid API not available') || 
+          errorMessage.includes('Failed to add to Real-Debrid') ||
+          errorMessage.includes('proxy') ||
+          errorMessage.includes('connection')) {
+        setRealDebridError(errorMessage);
+      }
+      
+      setError('Error downloading: ' + errorMessage);
     } finally {
       setDownloadingItems(prev => {
         const newSet = new Set(prev);
@@ -117,6 +124,7 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
     setSearchPerformed(false);
     setDownloads([]);
     setError(null);
+    setRealDebridError(null);
   };
 
   if (!gameName) {
@@ -260,15 +268,12 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
                     
                     <button
                       onClick={() => handleDownload(download)}
-                      disabled={isDownloading || !isAuthenticated}
+                      disabled={isDownloading}
                       className={`px-3 py-2 rounded text-sm transition-colors duration-300 flex items-center ${
-                        !isAuthenticated 
-                          ? 'bg-gray-500 text-gray-300 cursor-not-allowed'
-                          : isDownloading
+                        isDownloading
                           ? 'bg-yellow-600 text-white cursor-not-allowed'
                           : 'bg-green-600 hover:bg-green-700 text-white'
                       }`}
-                      title={!isAuthenticated ? 'Connect to Real-Debrid first' : ''}
                     >
                       {isDownloading ? (
                         <>
@@ -292,18 +297,27 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
         </div>
       )}
 
-      {/* Real-Debrid connection prompt */}
-      {!isAuthenticated && (
-        <div className="mt-4 p-3 bg-blue-900 border border-blue-700 rounded-lg">
+      {/* Real-Debrid connection issue warning - only show if there's an actual problem */}
+      {realDebridError && (
+        <div className="mt-4 p-3 bg-red-900 border border-red-700 rounded-lg">
           <div className="flex items-center">
-            <svg className="w-5 h-5 text-blue-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            <svg className="w-5 h-5 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
             </svg>
             <div>
-              <p className="text-blue-300 text-sm font-medium">Real-Debrid Required</p>
-              <p className="text-blue-400 text-xs">Connect to Real-Debrid to download torrents directly to your library.</p>
+              <p className="text-red-300 text-sm font-medium">Real-Debrid Connection Issue</p>
+              <p className="text-red-400 text-xs">Unable to connect to Real-Debrid through the proxy server. Please check your internet connection and try again.</p>
+              {realDebridError && (
+                <p className="text-red-500 text-xs mt-1">Error: {realDebridError}</p>
+              )}
             </div>
           </div>
+          <button
+            onClick={() => setRealDebridError(null)}
+            className="mt-2 text-xs underline opacity-75 hover:opacity-100 text-red-300"
+          >
+            Dismiss
+          </button>
         </div>
       )}
     </div>
