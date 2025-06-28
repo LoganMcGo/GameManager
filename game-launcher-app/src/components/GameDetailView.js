@@ -27,6 +27,16 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
     }, 100);
   };
 
+  // Navigation function to go to downloads page
+  const handleNavigateToDownloads = () => {
+    onClose(); // Close the detail view first
+    // Use a small delay to ensure the detail view closes before navigation
+    setTimeout(() => {
+      // Navigate to downloads page by triggering custom event
+      window.dispatchEvent(new CustomEvent('navigateToDownloads'));
+    }, 100);
+  };
+
   // Combine screenshots and videos into media array - videos first
   const mediaItems = [];
   
@@ -393,6 +403,7 @@ function GameDetailView({ game, isLoading, onClose, onGameSelect }) {
                       gameId={game.appId} 
                       game={game}
                       onNavigateToLibrary={handleNavigateToLibrary}
+                      onNavigateToDownloads={handleNavigateToDownloads}
                     />
                     
                     {/* Genres and Themes */}

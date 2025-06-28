@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import MainContent from './components/MainContent';
 import SearchBar from './components/SearchBar';
@@ -30,10 +30,37 @@ function AppContent() {
   const [selectedGame, setSelectedGame] = useState(null);
   const [gameDetails, setGameDetails] = useState(null);
   const [isLoadingGameDetails, setIsLoadingGameDetails] = useState(false);
+
+  // Set up event listeners for custom navigation events
+  useEffect(() => {
+    const handleNavigateToLibrary = () => {
+      setCurrentPage('library');
+    };
+
+    const handleNavigateToDownloads = () => {
+      setCurrentPage('downloads');
+    };
+
+    window.addEventListener('navigateToLibrary', handleNavigateToLibrary);
+    window.addEventListener('navigateToDownloads', handleNavigateToDownloads);
+
+    return () => {
+      window.removeEventListener('navigateToLibrary', handleNavigateToLibrary);
+      window.removeEventListener('navigateToDownloads', handleNavigateToDownloads);
+    };
+  }, []);
   
   // Navigation handler
   const handleNavigate = (page) => {
     setCurrentPage(page);
+    
+    // Trigger refresh for specific pages
+    if (page === 'library') {
+      // Trigger library refresh event
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('libraryRefresh'));
+      }, 100);
+    }
   };
 
   // Handle game selection from search with proper detail fetching
@@ -174,7 +201,7 @@ function AppContent() {
       {/* Main App Content */}
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left Sidebar */}
-        <Sidebar currentPage={currentPage} setCurrentPage={setCurrentPage} />
+        <Sidebar currentPage={currentPage} setCurrentPage={setCurrentPage} onNavigate={handleNavigate} />
         
         {/* Main Content Area */}
         {currentPage === 'home' && <MainContent onNavigate={handleNavigate} onGameSelect={handleGameSelect} />}

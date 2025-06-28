@@ -18,6 +18,8 @@ function Library({ onGameSelect }) {
   const [activeDownloads, setActiveDownloads] = useState(new Map());
   const [runningGames, setRunningGames] = useState(new Set());
   const [gameStatuses, setGameStatuses] = useState(new Map());
+  const [statusUpdateDebounce, setStatusUpdateDebounce] = useState(new Map());
+  const [isCheckingInstalled, setIsCheckingInstalled] = useState(false);
 
   // Check for installed games and Real-Debrid downloads
   useEffect(() => {
@@ -31,54 +33,192 @@ function Library({ onGameSelect }) {
   // Poll for download status updates and running games
   useEffect(() => {
     if (isAuthenticated) {
-      const interval = setInterval(() => {
-        checkRealDebridDownloads();
-        checkActiveDownloads();
-        checkRunningGames();
-      }, 5000); // Check every 5 seconds
-
-      return () => clearInterval(interval);
+      // Only do initial check, no polling
+      console.log('🔐 Authentication detected, checking Real-Debrid downloads...');
+      checkRealDebridDownloads();
+      checkActiveDownloads();
+      checkRunningGames();
     }
   }, [isAuthenticated]);
 
+  // Setup real-time listeners
+  useEffect(() => {
+    // Listen for download updates
+    const unsubscribeDownloads = window.api.downloadTracker.onDownloadUpdate((download) => {
+      setActiveDownloads(prevDownloads => {
+        const updated = new Map(prevDownloads);
+        updated.set(download.gameId, download);
+        return updated;
+      });
+      
+      // Check if we should update status
+      const existingStatus = gameStatuses.get(download.gameId);
+      
+      // Preserve installed/ready status if game is complete and has executable
+      const shouldPreserveInstalled = existingStatus && 
+        existingStatus.status === 'complete' && 
+        existingStatus.executablePath && 
+        download.status === 'complete';
+      
+      if (!shouldPreserveInstalled) {
+        const newStatus = {
+          status: download.status,
+          progress: download.progress || 0,
+          extractionProgress: download.extractionProgress || 0,
+          gameDirectory: download.gameDirectory,
+          executablePath: download.executablePath,
+          needsManualSetup: download.needsManualSetup,
+          availableExecutables: download.availableExecutables
+        };
+        
+        updateGameStatusDebounced(download.gameId, newStatus, 'realTimeListener');
+      }
+      
+      // Immediate installation check when download completes
+      if (download.status === 'complete' || download.status === 'extraction_complete') {
+        console.log('🚀 Download completed, checking installation status immediately...');
+        setTimeout(() => checkInstalledGames(), 500); // Small delay to ensure files are ready
+      }
+    });
+
+    // Listen for game closure events
+    const unsubscribeGameClosed = window.api.launcher.onGameClosed((gameData) => {
+      console.log(`🛑 Game closed notification received: ${gameData.gameName}`);
+      setRunningGames(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(gameData.gameId);
+        return newSet;
+      });
+    });
+
+    return () => {
+      unsubscribeDownloads();
+      unsubscribeGameClosed();
+    };
+  }, []);
+
+  // Setup periodic checks with improved intervals + force refresh capability
+  useEffect(() => {
+    if (library.length === 0) return;
+
+    // Force refresh function accessible globally
+    window.libraryForceRefresh = () => {
+      console.log('🔄 Force refreshing library...');
+      checkInstalledGames();
+      checkActiveDownloads(); 
+      checkRunningGames();
+    };
+
+    // Initial checks when library loads
+    console.log('📚 Library loaded, performing initial status check...');
+    checkInstalledGames();
+    checkActiveDownloads();
+    checkRunningGames();
+
+    return () => {
+      // Clean up global function
+      if (window.libraryForceRefresh) {
+        delete window.libraryForceRefresh;
+      }
+    };
+  }, [library]);
+
+  // Force refresh when component becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && library.length > 0) {
+        console.log('🔄 Library became visible, refreshing immediately...');
+        // Immediate checks for better responsiveness
+        setTimeout(() => {
+          checkInstalledGames();
+          checkActiveDownloads();
+          checkRunningGames();
+        }, 100);
+      }
+    };
+
+    const handleNavigationRefresh = () => {
+      console.log('🔄 Navigation to library detected, refreshing immediately...');
+      // Immediate checks for better responsiveness
+      setTimeout(() => {
+        checkInstalledGames();
+        checkActiveDownloads();
+        checkRunningGames();
+      }, 100);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('navigateToLibrary', handleNavigationRefresh);
+    window.addEventListener('libraryRefresh', handleNavigationRefresh);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('navigateToLibrary', handleNavigationRefresh);
+      window.removeEventListener('libraryRefresh', handleNavigationRefresh);
+    };
+  }, [library]);
+
   // Check for installed games
   const checkInstalledGames = async () => {
+    // Prevent multiple concurrent checks
+    if (isCheckingInstalled) {
+      console.log('🚫 Installation check already in progress, skipping...');
+      return;
+    }
+    
+    setIsCheckingInstalled(true);
     try {
       const downloadLocation = await window.api.download.getDownloadLocation();
       if (downloadLocation) {
-        const updatedStatuses = new Map();
+        const newInstalledGames = new Set();
         
         for (const game of library) {
+          // First try to use tracked game directory if available
+          const trackedStatus = gameStatuses.get(game.appId);
+          
+          // Skip games that are actively downloading/extracting to avoid conflicts
+          if (trackedStatus && ['downloading', 'extracting', 'download_complete', 'extraction_complete', 'finding_executable'].includes(trackedStatus.status)) {
+            continue;
+          }
+          
+          const gameDirectory = trackedStatus?.gameDirectory || `${downloadLocation}/${game.name.replace(/[<>:"/\\|?*]/g, '_')}`;
+          
           const gameInfo = {
             gameId: game.appId,
             gameName: game.name,
-            gameDirectory: `${downloadLocation}/${game.name}`
+            gameDirectory: gameDirectory
           };
           
           try {
             const readyStatus = await window.api.launcher.isGameReady(gameInfo);
             if (readyStatus.ready) {
-              setInstalledGames(prev => new Set(prev).add(game.appId));
-              updatedStatuses.set(game.appId, {
-                ...readyStatus,
-                gameDirectory: gameInfo.gameDirectory
-              });
-            } else {
-              setInstalledGames(prev => {
-                const newSet = new Set(prev);
-                newSet.delete(game.appId);
-                return newSet;
-              });
+              newInstalledGames.add(game.appId);
+              
+              // Only update gameStatuses if we don't have a tracked status OR the tracked status is complete but missing executable info
+              const needsStatusUpdate = !trackedStatus || 
+                (trackedStatus.status === 'complete' && !trackedStatus.executablePath && readyStatus.executablePath);
+              
+              if (needsStatusUpdate) {
+                const newStatus = {
+                  ...trackedStatus, // Preserve existing tracked data
+                  ...readyStatus,
+                  gameDirectory: gameDirectory,
+                  status: 'complete' // Mark as complete for installed games
+                };
+                updateGameStatusDebounced(game.appId, newStatus, 'installedChecker');
+              }
             }
           } catch (error) {
             console.warn(`Failed to check game readiness for ${game.name}:`, error);
           }
         }
         
-        setGameStatuses(updatedStatuses);
+        setInstalledGames(newInstalledGames);
       }
     } catch (error) {
       console.warn('Failed to check installed games:', error);
+    } finally {
+      setIsCheckingInstalled(false);
     }
   };
 
@@ -120,20 +260,42 @@ function Library({ onGameSelect }) {
     }
   };
 
-  // Check active downloads
+  // Check active downloads from the new download tracker
   const checkActiveDownloads = async () => {
     try {
-      if (window.api?.download?.getActiveDownloads) {
-        const downloads = await window.api.download.getActiveDownloads();
+      if (window.api?.downloadTracker?.getDownloads) {
+        const trackedDownloads = await window.api.downloadTracker.getDownloads();
         const activeMap = new Map();
         
-        downloads.forEach(download => {
-          // Try to match download to a library game
+        trackedDownloads.forEach(download => {
+          // Match download to library game by game ID or name
           library.forEach(game => {
-            if (download.filename && 
-                (download.filename.toLowerCase().includes(game.name.toLowerCase()) ||
-                 game.name.toLowerCase().includes(download.filename.toLowerCase().split('.')[0]))) {
+            if ((download.gameId && download.gameId === game.appId) ||
+                (download.gameName && 
+                 (download.gameName.toLowerCase().includes(game.name.toLowerCase()) ||
+                  game.name.toLowerCase().includes(download.gameName.toLowerCase())))) {
+              
               activeMap.set(game.appId, download);
+              
+              // Only update status if it's not already properly completed
+              const existingStatus = gameStatuses.get(game.appId);
+              const shouldUpdateStatus = !existingStatus || 
+                existingStatus.status !== 'complete' || 
+                !existingStatus.executablePath || 
+                download.status !== 'complete';
+              
+              if (shouldUpdateStatus) {
+                const newStatus = {
+                  status: download.status,
+                  progress: download.progress || 0,
+                  extractionProgress: download.extractionProgress || 0,
+                  gameDirectory: download.gameDirectory,
+                  executablePath: download.executablePath,
+                  needsManualSetup: download.needsManualSetup,
+                  availableExecutables: download.availableExecutables
+                };
+                updateGameStatusDebounced(game.appId, newStatus, 'downloadTracker');
+              }
             }
           });
         });
@@ -141,8 +303,32 @@ function Library({ onGameSelect }) {
         setActiveDownloads(activeMap);
       }
     } catch (error) {
-      console.warn('Failed to check active downloads:', error);
+      console.warn('Failed to check tracked downloads:', error);
     }
+  };
+
+  // Debounced status update function
+  const updateGameStatusDebounced = (gameId, newStatus, source) => {
+    const currentTime = Date.now();
+    const lastUpdate = statusUpdateDebounce.get(gameId) || 0;
+    
+    // Prevent updates within 2 seconds unless it's a significant change
+    if (currentTime - lastUpdate < 2000) {
+      const existingStatus = gameStatuses.get(gameId);
+      if (existingStatus && existingStatus.status === newStatus.status) {
+        console.log(`🚫 Debounced status update for ${gameId} from ${source}`);
+        return;
+      }
+    }
+    
+    console.log(`✅ Updating status for ${gameId} to ${newStatus.status} from ${source}`);
+    setStatusUpdateDebounce(prev => new Map(prev).set(gameId, currentTime));
+    
+    setGameStatuses(prev => {
+      const updated = new Map(prev);
+      updated.set(gameId, newStatus);
+      return updated;
+    });
   };
 
   // Filter and sort games
@@ -207,71 +393,119 @@ function Library({ onGameSelect }) {
   };
 
   const handleGameAction = async (game) => {
-    const isInstalled = installedGames.has(game.appId);
-    const isRunning = runningGames.has(game.appId);
-    const isDownloaded = downloadedGames.has(game.appId);
-    const activeDownload = activeDownloads.get(game.appId);
+    const gameStatus = getGameStatus(game);
+    const trackedStatus = gameStatuses.get(game.appId);
     
-    if (isRunning) {
-      // Stop the game
-      try {
-        console.log('Stopping game:', game.name);
-        const result = await window.api.launcher.stopGame(game.appId);
-        if (result.success) {
-          console.log('Game stopped successfully');
-          // Update running games state
-          setRunningGames(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(game.appId);
-            return newSet;
-          });
-        } else {
-          console.error('Failed to stop game:', result.error);
+    switch (gameStatus.status) {
+      case 'running':
+        // Stop the game
+        try {
+          console.log('Stopping game:', game.name);
+          const result = await window.api.launcher.stopGame(game.appId);
+          if (result.success) {
+            console.log('Game stopped successfully');
+            setRunningGames(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(game.appId);
+              return newSet;
+            });
+            // Immediate check to update status
+            setTimeout(() => checkInstalledGames(), 200);
+          } else {
+            console.error('Failed to stop game:', result.error);
+          }
+        } catch (error) {
+          console.error('Error stopping game:', error);
         }
-      } catch (error) {
-        console.error('Error stopping game:', error);
-      }
-    } else if (isInstalled) {
-      // Launch game
-      try {
-        console.log('Launching game:', game.name);
-        const gameStatus = gameStatuses.get(game.appId);
-        const gameInfo = {
-          gameId: game.appId,
-          gameName: game.name,
-          gameDirectory: gameStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
-        };
+        break;
         
-        const result = await window.api.launcher.launchGame(gameInfo);
-        if (result.success) {
-          console.log('Game launched successfully');
-          // Update running games state
-          setRunningGames(prev => new Set(prev).add(game.appId));
-        } else if (result.needsManualSetup) {
-          // Show executable selection dialog
+      case 'installed':
+      case 'ready_to_play':
+        // Launch game - try tracked executable first, then fallback to old method
+        try {
+          console.log('Launching game:', game.name);
+          
+          let gameInfo = {
+            gameId: game.appId,
+            gameName: game.name
+          };
+          
+          // Use tracked game directory and executable if available
+          if (trackedStatus?.gameDirectory) {
+            gameInfo.gameDirectory = trackedStatus.gameDirectory;
+            if (trackedStatus.executablePath) {
+              gameInfo.executablePath = trackedStatus.executablePath;
+            }
+          } else {
+            // Fallback to old method
+            const downloadLocation = await window.api.download.getDownloadLocation();
+            gameInfo.gameDirectory = `${downloadLocation}/${game.name}`;
+          }
+          
+          const result = await window.api.launcher.launchGame(gameInfo);
+          if (result.success) {
+            console.log('Game launched successfully');
+            setRunningGames(prev => new Set(prev).add(game.appId));
+            // Immediate check to update status
+            setTimeout(() => checkInstalledGames(), 200);
+          } else if (result.needsManualSetup) {
+            await handleExecutableSelection(game, gameInfo);
+          } else {
+            console.error('Failed to launch game:', result.error);
+          }
+        } catch (error) {
+          console.error('Error launching game:', error);
+        }
+        break;
+        
+      case 'needs_setup':
+        // Setup game with manual executable selection
+        try {
+          const gameInfo = {
+            gameId: game.appId,
+            gameName: game.name,
+            gameDirectory: trackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
+          };
           await handleExecutableSelection(game, gameInfo);
+        } catch (error) {
+          console.error('Error setting up game:', error);
+        }
+        break;
+        
+      case 'downloading':
+      case 'download_complete':
+      case 'extracting':
+      case 'extraction_complete':
+      case 'finding_executable':
+        // Navigate to downloads page to view progress
+        handleNavigateToDownloads();
+        break;
+        
+      case 'downloaded':
+        // Open download folder
+        try {
+          if (window.api?.download?.openDownloadLocation) {
+            await window.api.download.openDownloadLocation();
+          }
+        } catch (error) {
+          console.error('Failed to open download location:', error);
+        }
+        break;
+        
+      case 'error':
+        // Show available downloads to retry
+        handleGameClick(game);
+        break;
+        
+      case 'not_downloaded':
+      default:
+        // Show available downloads - first try to scroll to downloads section if already viewing this game
+        if (selectedGame && selectedGame.appId === game.appId) {
+          scrollToDownloads();
         } else {
-          console.error('Failed to launch game:', result.error);
+          handleGameClick(game);
         }
-      } catch (error) {
-        console.error('Error launching game:', error);
-      }
-    } else if (isDownloaded) {
-      // Game is downloaded but not installed - open download location
-      console.log('Opening download location for:', game.name);
-      try {
-        if (window.api?.download?.openDownloadLocation) {
-          await window.api.download.openDownloadLocation();
-        }
-      } catch (error) {
-        console.error('Failed to open download location:', error);
-      }
-    } else if (activeDownload) {
-      // Show download progress or cancel download
-      console.log('Download in progress for:', game.name);
-    } else {
-      // Show available downloads
-      handleGameClick(game);
+        break;
     }
   };
 
@@ -329,38 +563,140 @@ function Library({ onGameSelect }) {
   };
 
   const getGameStatus = (game) => {
-    const isInstalled = installedGames.has(game.appId);
     const isRunning = runningGames.has(game.appId);
+    const isInstalled = installedGames.has(game.appId);
     const isDownloaded = downloadedGames.has(game.appId);
     const activeDownload = activeDownloads.get(game.appId);
+    const gameStatus = gameStatuses.get(game.appId);
     
+    // Priority 1: Currently running games
     if (isRunning) {
       return { status: 'running', text: '🎮 Running', color: 'text-green-400', action: 'Stop Game' };
-    } else if (isInstalled) {
-      return { status: 'installed', text: '● Installed', color: 'text-green-400', action: 'Play Game' };
-    } else if (activeDownload) {
-      const progress = activeDownload.progress || 0;
-      let statusText = `⬇ Downloading ${progress.toFixed(1)}%`;
-      
-      if (activeDownload.status === 'extracting') {
-        statusText = `🔧 Extracting...`;
-      } else if (activeDownload.status === 'extracted') {
-        statusText = `✅ Extracted`;
-      } else if (activeDownload.status === 'extraction_failed') {
-        statusText = `❌ Extraction Failed`;
+    }
+    
+    // Priority 2: Games with tracked status (from download tracker)
+    if (gameStatus) {
+      switch (gameStatus.status) {
+        case 'downloading':
+          return { 
+            status: 'downloading', 
+            text: `⬇ Downloading ${gameStatus.progress.toFixed(1)}%`, 
+            color: 'text-blue-400', 
+            action: 'View Progress',
+            progress: gameStatus.progress
+          };
+        case 'download_complete':
+          return { 
+            status: 'download_complete', 
+            text: '📦 Download Complete', 
+            color: 'text-blue-300', 
+            action: 'View Progress',
+            progress: 100
+          };
+        case 'extracting':
+          return { 
+            status: 'extracting', 
+            text: `🔧 Extracting ${(gameStatus.extractionProgress || 0).toFixed(1)}%`, 
+            color: 'text-purple-400', 
+            action: 'View Progress',
+            progress: gameStatus.extractionProgress || 0
+          };
+        case 'extraction_complete':
+          return { 
+            status: 'extraction_complete', 
+            text: '✅ Extraction Complete', 
+            color: 'text-purple-300', 
+            action: 'View Progress',
+            progress: 100
+          };
+        case 'finding_executable':
+          return { 
+            status: 'finding_executable', 
+            text: '🔍 Setting up game...', 
+            color: 'text-yellow-400', 
+            action: 'View Progress',
+            progress: 90
+          };
+        case 'complete':
+          // Game is complete, check if it has executable path
+          if (gameStatus.executablePath) {
+            return { 
+              status: 'ready_to_play', 
+              text: '🎮 Installed', 
+              color: 'text-green-400', 
+              action: 'Play'
+            };
+          } else if (gameStatus.needsManualSetup) {
+            return { 
+              status: 'needs_setup', 
+              text: '⚙️ Needs Setup', 
+              color: 'text-yellow-400', 
+              action: 'Setup'
+            };
+          } else {
+            // Fallback to installed check
+            return { 
+              status: 'installed', 
+              text: '● Installed', 
+              color: 'text-green-400', 
+              action: 'Play'
+            };
+          }
+        case 'error':
+          return { 
+            status: 'error', 
+            text: '❌ Download Failed', 
+            color: 'text-red-400', 
+            action: 'Retry Download'
+          };
+        default:
+          // Unknown tracked status, continue to other checks
+          break;
       }
-      
+    }
+    
+    // Priority 3: Check if game is installed (detected by launcher)
+    if (isInstalled) {
+      return { status: 'installed', text: '● Installed', color: 'text-green-400', action: 'Play' };
+    }
+    
+    // Priority 4: Active download in progress (legacy or without tracked status)
+    if (activeDownload) {
       return { 
         status: 'downloading', 
-        text: statusText, 
+        text: '⬇ Processing...', 
         color: 'text-blue-400', 
-        action: 'View Progress',
-        progress: progress
+        action: 'View Progress'
       };
-    } else if (isDownloaded) {
+    }
+    
+    // Priority 5: Downloaded to Real-Debrid but not locally installed
+    if (isDownloaded) {
       return { status: 'downloaded', text: '✓ Downloaded', color: 'text-yellow-400', action: 'Open Folder' };
-    } else {
-      return { status: 'not_downloaded', text: '○ Not Downloaded', color: 'text-gray-400', action: 'Find Downloads' };
+    }
+    
+    // Priority 6: Not downloaded at all
+    return { status: 'not_downloaded', text: '○ Not Downloaded', color: 'text-gray-400', action: 'Find Downloads' };
+  };
+
+  // Navigate to downloads page
+  const handleNavigateToDownloads = () => {
+    closeDetailView(); // Close the detail view first
+    // Use a small delay to ensure the detail view closes before navigation
+    setTimeout(() => {
+      // Navigate to downloads page by triggering custom event
+      window.dispatchEvent(new CustomEvent('navigateToDownloads'));
+    }, 100);
+  };
+
+  // Scroll to downloads section within the current game detail view
+  const scrollToDownloads = () => {
+    const downloadsSection = document.querySelector('.available-downloads-section');
+    if (downloadsSection) {
+      downloadsSection.scrollIntoView({ 
+        behavior: 'smooth', 
+        block: 'start' 
+      });
     }
   };
 
@@ -392,9 +728,11 @@ function Library({ onGameSelect }) {
             <button
               onClick={() => handleGameAction(gameData)}
               className={`px-6 py-2 rounded-lg font-semibold transition-colors flex items-center ${
-                gameStatus.status === 'installed' 
+                gameStatus.status === 'running'
+                  ? 'bg-red-600 hover:bg-red-700 text-white'
+                  : gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play'
                   ? 'bg-green-600 hover:bg-green-700 text-white'
-                  : gameStatus.status === 'downloading'
+                  : gameStatus.status === 'downloading' || gameStatus.status === 'extracting'
                   ? 'bg-blue-600 hover:bg-blue-700 text-white'
                   : gameStatus.status === 'downloaded'
                   ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
@@ -402,9 +740,11 @@ function Library({ onGameSelect }) {
               }`}
             >
               <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                {gameStatus.status === 'installed' ? (
+                {gameStatus.status === 'running' ? (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 6h12v12H6z" />
+                ) : gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' ? (
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h10a2 2 0 012 2v14a2 2 0 01-2 2z" />
-                ) : gameStatus.status === 'downloading' ? (
+                ) : gameStatus.status === 'downloading' || gameStatus.status === 'extracting' ? (
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4 4m0 0l-4-4m4 4V4" />
                 ) : gameStatus.status === 'downloaded' ? (
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
@@ -412,7 +752,9 @@ function Library({ onGameSelect }) {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 )}
               </svg>
-              {gameStatus.action}
+              {gameStatus.status === 'running' ? 'Stop' : 
+               gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' ? 'Play' :
+               gameStatus.action}
             </button>
           </div>
         </div>
@@ -495,6 +837,7 @@ function Library({ onGameSelect }) {
                     gameId={gameData.appId} 
                     game={gameData}
                     onNavigateToLibrary={closeDetailView}
+                    onNavigateToDownloads={handleNavigateToDownloads}
                   />
                 )}
 
@@ -814,16 +1157,20 @@ function Library({ onGameSelect }) {
                         handleGameAction(game);
                       }}
                       className={`px-4 py-2 rounded transition-colors text-sm font-medium ${
-                        gameStatus.status === 'installed' 
+                        gameStatus.status === 'running'
+                          ? 'bg-red-600 hover:bg-red-700 text-white'
+                          : gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play'
                           ? 'bg-green-600 hover:bg-green-700 text-white'
-                          : gameStatus.status === 'downloading'
+                          : gameStatus.status === 'downloading' || gameStatus.status === 'extracting'
                           ? 'bg-blue-600 hover:bg-blue-700 text-white'
                           : gameStatus.status === 'downloaded'
                           ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
                           : 'bg-gray-600 hover:bg-gray-700 text-white'
                       }`}
                     >
-                      {gameStatus.action}
+                      {gameStatus.status === 'running' ? 'Stop' : 
+                       gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' ? 'Play' :
+                       gameStatus.action}
                     </button>
                   </div>
                 </div>

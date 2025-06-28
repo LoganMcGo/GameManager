@@ -122,7 +122,12 @@ contextBridge.exposeInMainWorld(
       findExecutable: (gameInfo) => ipcRenderer.invoke('launcher:find-executable', gameInfo),
       scanDirectory: (directoryPath) => ipcRenderer.invoke('launcher:scan-directory', directoryPath),
       setExecutablePath: (gameId, executablePath) => ipcRenderer.invoke('launcher:set-executable-path', gameId, executablePath),
-      isGameReady: (gameInfo) => ipcRenderer.invoke('launcher:is-game-ready', gameInfo)
+      isGameReady: (gameInfo) => ipcRenderer.invoke('launcher:is-game-ready', gameInfo),
+      onGameClosed: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('launcher:game-closed', wrappedCallback);
+        return () => ipcRenderer.removeListener('launcher:game-closed', wrappedCallback);
+      }
     },
     
     // Game Extraction API

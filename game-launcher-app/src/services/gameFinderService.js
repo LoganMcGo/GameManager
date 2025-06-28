@@ -60,14 +60,12 @@ class GameFinderService {
     try {
       const settings = localStorage.getItem('torrentProviderSettings');
       return settings ? JSON.parse(settings) : {
-        TorrentAPI: { enabled: true, name: 'TorrentAPI (RARBG)', description: 'High-quality game torrents' },
         ThePirateBay: { enabled: true, name: 'The Pirate Bay', description: 'Large torrent database' },
         Nyaa: { enabled: true, name: 'Nyaa.si', description: 'Good for Japanese games' },
         '1337x': { enabled: true, name: '1337x', description: 'Popular torrent site with game repacks' }
       };
     } catch {
       return {
-        TorrentAPI: { enabled: true, name: 'TorrentAPI (RARBG)', description: 'High-quality game torrents' },
         ThePirateBay: { enabled: true, name: 'The Pirate Bay', description: 'Large torrent database' },
         Nyaa: { enabled: true, name: 'Nyaa.si', description: 'Good for Japanese games' },
         '1337x': { enabled: true, name: '1337x', description: 'Popular torrent site with game repacks' }
@@ -154,7 +152,6 @@ class GameFinderService {
     
     try {
       const allSearches = [
-        { name: 'TorrentAPI', search: this.searchTorrentAPI(gameName) },
         { name: 'ThePirateBay', search: this.searchTPB(gameName) },
         { name: 'Nyaa', search: this.searchNyaa(gameName) },
         { name: '1337x', search: this.search1337x(gameName) }
@@ -195,139 +192,6 @@ class GameFinderService {
       return [];
     }
   }
-
-  // Search TorrentAPI (RARBG successor) with improved rate limiting and retry logic
-  async searchTorrentAPI(gameName) {
-    const maxRetries = 3;
-    let attempt = 0;
-    
-    while (attempt < maxRetries) {
-      try {
-        attempt++;
-        console.log(`🔍 TorrentAPI: Attempt ${attempt}/${maxRetries} - Searching for "${gameName}"`);
-        
-        // Get token with retry logic
-        let tokenData = null;
-        for (let tokenAttempt = 1; tokenAttempt <= 2; tokenAttempt++) {
-          try {
-            const tokenResponse = await fetch('https://torrentapi.org/pubapi_v2.php?get_token=get_token&app_id=gamedownloader');
-            if (tokenResponse.ok) {
-              tokenData = await tokenResponse.json();
-              if (tokenData.token) {
-                console.log(`✅ TorrentAPI: Got token on attempt ${tokenAttempt}`);
-                break;
-              }
-            }
-            if (tokenAttempt === 1) {
-              console.warn(`⚠️ TorrentAPI: Token attempt ${tokenAttempt} failed, retrying...`);
-              await new Promise(resolve => setTimeout(resolve, 3000));
-            }
-          } catch (e) {
-            console.warn(`❌ TorrentAPI: Token request ${tokenAttempt} failed:`, e.message);
-          }
-        }
-        
-        if (!tokenData?.token) {
-          console.warn('❌ TorrentAPI: Failed to get token after retries');
-          if (attempt < maxRetries) {
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            continue;
-          }
-          return [];
-        }
-        
-        // Wait longer to respect rate limits (TorrentAPI is strict)
-        const waitTime = attempt === 1 ? 3000 : 5000 * attempt;
-        console.log(`⏳ TorrentAPI: Waiting ${waitTime}ms for rate limit...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        
-        // Try multiple search strategies
-        const searchStrategies = [
-          { query: gameName, category: 'games', description: 'Full name with games category' },
-          { query: gameName, category: '', description: 'Full name without category' },
-          { query: gameName.split(' ')[0], category: 'games', description: 'First word with games category' },
-          { query: `${gameName} repack`, category: '', description: 'With repack keyword' }
-        ];
-        
-        for (const strategy of searchStrategies) {
-          try {
-            console.log(`🔍 TorrentAPI: Trying strategy - ${strategy.description}`);
-            
-            const params = new URLSearchParams({
-              mode: 'search',
-              search_string: strategy.query,
-              format: 'json_extended',
-              app_id: 'gamedownloader',
-              token: tokenData.token
-            });
-            
-            if (strategy.category) {
-              params.append('category', strategy.category);
-            }
-            
-            const searchUrl = `https://torrentapi.org/pubapi_v2.php?${params}`;
-            const response = await fetch(searchUrl);
-            
-            if (!response.ok) {
-              console.warn(`❌ TorrentAPI: Search failed with status ${response.status}`);
-              continue;
-            }
-            
-            const data = await response.json();
-            console.log(`📊 TorrentAPI: Strategy "${strategy.description}" response:`, data);
-            
-            // Handle rate limiting
-            if (data.error_code === 5) {
-              console.warn('⚠️ TorrentAPI: Rate limited, waiting longer...');
-              await new Promise(resolve => setTimeout(resolve, 10000));
-              continue;
-            }
-            
-            if (data.error_code && data.error_code !== 20) { // 20 = no results found
-              console.warn(`❌ TorrentAPI: API error ${data.error_code}: ${data.error}`);
-              continue;
-            }
-            
-            if (data.torrent_results && data.torrent_results.length > 0) {
-              const results = data.torrent_results.map(item => ({
-                name: item.title,
-                magnet: item.download,
-                size: item.size,
-                seeders: item.seeders || 0,
-                leechers: item.leechers || 0,
-                source: 'TorrentAPI',
-                quality: this.calculateQuality(item.title, item.seeders, item.size),
-                publishDate: item.pubdate
-              }));
-              
-              console.log(`✅ TorrentAPI: Found ${results.length} results with strategy "${strategy.description}"`);
-              return results;
-            }
-            
-            // Wait between strategies
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          } catch (strategyError) {
-            console.warn(`❌ TorrentAPI: Strategy "${strategy.description}" failed:`, strategyError.message);
-          }
-        }
-        
-        console.log('📊 TorrentAPI: No results found with any strategy');
-        return [];
-        
-      } catch (error) {
-        console.error(`❌ TorrentAPI: Attempt ${attempt} failed:`, error);
-        if (attempt < maxRetries) {
-          const backoffTime = 5000 * Math.pow(2, attempt - 1); // Exponential backoff
-          console.log(`⏳ TorrentAPI: Waiting ${backoffTime}ms before retry...`);
-          await new Promise(resolve => setTimeout(resolve, backoffTime));
-        }
-      }
-    }
-    
-    console.error('❌ TorrentAPI: All attempts failed');
-    return [];
-  }
-
 
   // Search ThePirateBay (using a working proxy)
   async searchTPB(gameName) {

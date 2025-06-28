@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useLibrary } from '../context/LibraryContext';
 import gameFinderService from '../services/gameFinderService';
 
-function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
+function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary, onNavigateToDownloads }) {
   const { addToLibrary } = useLibrary();
   const [downloads, setDownloads] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -52,7 +52,7 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
     setRealDebridError(null);
 
     try {
-      console.log(`📦 Adding magnet to Real-Debrid: ${downloadItem.title}`);
+      console.log(`📦 Starting full download workflow: ${downloadItem.title}`);
       
       // Use magnet link directly (stored in downloadItem.magnet or downloadItem.url)
       const magnetLink = downloadItem.magnet || downloadItem.url;
@@ -61,6 +61,15 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
         throw new Error('No valid magnet link available');
       }
 
+      // Start download tracking first
+      const downloadId = await window.api.downloadTracker.startTracking({
+        game: game || { id: gameId, name: gameName },
+        magnetLink: magnetLink,
+        torrentName: downloadItem.title
+      });
+
+      console.log(`📋 Started tracking download with ID: ${downloadId}`);
+
       // Add magnet to Real-Debrid using gameFinderService
       const addResponse = await gameFinderService.addToRealDebrid({ magnet: magnetLink, name: downloadItem.title });
       
@@ -68,6 +77,14 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
         console.log('✅ Successfully added magnet to Real-Debrid');
         setError(null);
         setRealDebridError(null);
+        
+        // Update tracking with torrent ID if available
+        if (addResponse.data?.id) {
+          await window.api.downloadTracker.updateStatus(downloadId, 'starting_torrent', {
+            torrentId: addResponse.data.id
+          });
+          console.log(`📋 Updated tracker with torrent ID: ${addResponse.data.id}`);
+        }
         
         // Automatically add game to library if game object is provided
         if (game) {
@@ -80,12 +97,15 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
         }
         
         // Show success message with navigation option
-        const successMessage = `Successfully added "${downloadItem.title}" to Real-Debrid downloads! Game added to library.`;
+        const successMessage = `Successfully started download: "${downloadItem.title}". Check Downloads page for progress.`;
         setError(successMessage);
         
-        // Navigate to library after a short delay
+        // Navigate to downloads page after a short delay instead of library
         setTimeout(() => {
-          if (onNavigateToLibrary) {
+          if (onNavigateToDownloads) {
+            onNavigateToDownloads();
+          } else if (onNavigateToLibrary) {
+            // Fallback to library if downloads navigation is not available
             onNavigateToLibrary();
           }
         }, 2000);
@@ -95,10 +115,14 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
           setError(null);
         }, 5000);
       } else {
+        // If Real-Debrid failed, update tracker with error
+        await window.api.downloadTracker.updateStatus(downloadId, 'error', {
+          error: addResponse.error || 'Failed to add to Real-Debrid'
+        });
         throw new Error('Failed to add magnet to Real-Debrid: ' + addResponse.error);
       }
     } catch (err) {
-      console.error('❌ Error downloading:', err);
+      console.error('❌ Error in download workflow:', err);
       const errorMessage = err.message;
       
       // Check if this is a Real-Debrid connection issue
@@ -132,7 +156,7 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary }) {
   }
 
   return (
-    <div className="mt-6">
+    <div className="mt-6 available-downloads-section">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h4 className="text-lg font-semibold">Available Downloads</h4>

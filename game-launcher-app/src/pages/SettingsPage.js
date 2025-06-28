@@ -582,10 +582,9 @@ function SettingsPage({ onGameSelect }) {
 
           <div className="mt-4 p-3 bg-gray-700 rounded">
             <h4 className="font-medium text-gray-200 mb-2">Provider Information:</h4>
-            <ul className="text-gray-300 text-sm space-y-1">
-              <li><strong>TorrentAPI:</strong> High-quality game torrents (recommended)</li>
-              <li><strong>ThePirateBay:</strong> Large database, good for finding older games</li>
-              <li><strong>Nyaa.si:</strong> Excellent for Japanese games and visual novels</li>
+            <ul className="text-sm text-gray-400 space-y-1">
+              <li><strong>The Pirate Bay:</strong> Large torrent database with good game selection</li>
+              <li><strong>Nyaa.si:</strong> Good for Japanese games and visual novels</li>
               <li><strong>1337x:</strong> Popular torrent site with game repacks</li>
             </ul>
           </div>

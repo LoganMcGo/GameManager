@@ -1,9 +1,20 @@
 import React from 'react';
 
-function Sidebar({ currentPage, setCurrentPage }) {
+function Sidebar({ currentPage, setCurrentPage, onNavigate }) {
   // Function to handle navigation
   const navigate = (page) => {
-    setCurrentPage(page);
+    if (onNavigate) {
+      onNavigate(page);
+    } else {
+      setCurrentPage(page);
+    }
+    
+    // Trigger library refresh when navigating to library
+    if (page === 'library') {
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('libraryRefresh'));
+      }, 50);
+    }
   };
 
   return (

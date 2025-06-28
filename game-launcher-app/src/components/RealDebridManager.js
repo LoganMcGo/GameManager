@@ -12,7 +12,9 @@ function GameDownloadsManager({ onGameSelect }) {
   useEffect(() => {
     loadDownloads();
     
-    // Set up real-time updates
+    // Set up real-time updates with more frequent refresh
+    let refreshInterval;
+    
     const unsubscribe = window.api.downloadTracker.onDownloadUpdate((download) => {
       setDownloads(prevDownloads => {
         const updated = prevDownloads.map(d => 
@@ -85,8 +87,14 @@ function GameDownloadsManager({ onGameSelect }) {
       });
     });
     
+    // Also refresh the downloads list every 1 second to catch any missed updates
+    refreshInterval = setInterval(() => {
+      loadDownloads();
+    }, 1000);
+    
     return () => {
       if (unsubscribe) unsubscribe();
+      if (refreshInterval) clearInterval(refreshInterval);
     };
   }, []);
 
@@ -163,7 +171,15 @@ function GameDownloadsManager({ onGameSelect }) {
 
   // Get status loading dots for transitional states
   const getLoadingDots = (status) => {
-    const transitionalStatuses = ['adding_to_debrid', 'starting_torrent', 'torrent_downloading', 'starting_download', 'file_ready'];
+    const transitionalStatuses = [
+      'adding_to_debrid', 
+      'starting_torrent', 
+      'torrent_downloading', 
+      'starting_download', 
+      'file_ready',
+      'extracting',
+      'finding_executable'
+    ];
     if (transitionalStatuses.includes(status)) {
       return (
         <div className="inline-flex space-x-1 ml-1">
@@ -182,6 +198,10 @@ function GameDownloadsManager({ onGameSelect }) {
       case 'complete': return 'text-green-400';
       case 'error': return 'text-red-400';
       case 'downloading': return 'text-blue-400';
+      case 'download_complete': return 'text-blue-300';
+      case 'extracting': return 'text-purple-400';
+      case 'extraction_complete': return 'text-purple-300';
+      case 'finding_executable': return 'text-yellow-400';
       case 'torrent_downloading': return 'text-cyan-400';
       case 'file_ready': return 'text-purple-400';
       default: return 'text-yellow-400';
@@ -194,6 +214,10 @@ function GameDownloadsManager({ onGameSelect }) {
       case 'complete': return 'bg-green-500';
       case 'error': return 'bg-red-500';
       case 'downloading': return 'bg-blue-500';
+      case 'download_complete': return 'bg-blue-400';
+      case 'extracting': return 'bg-purple-500';
+      case 'extraction_complete': return 'bg-purple-400';
+      case 'finding_executable': return 'bg-yellow-500';
       case 'torrent_downloading': return 'bg-cyan-500';
       default: return 'bg-yellow-500';
     }
@@ -207,7 +231,13 @@ function GameDownloadsManager({ onGameSelect }) {
         <div className="flex justify-between items-center mb-6">
           <div>
             <h2 className="text-2xl font-bold">Game Downloads</h2>
-            <p className="text-gray-400 text-sm">Track your game downloads from start to finish</p>
+            <div className="flex items-center space-x-2">
+              <p className="text-gray-400 text-sm">Track your game downloads from start to finish</p>
+              <div className="flex items-center space-x-1 text-green-400">
+                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                <span className="text-xs">Live Updates</span>
+              </div>
+            </div>
           </div>
           <div className="flex gap-3">
             <button
@@ -265,7 +295,7 @@ function GameDownloadsManager({ onGameSelect }) {
                   <div className="flex-shrink-0">
                     {download.gameImage ? (
                       <img
-                        src={download.gameImage.replace('t_thumb', 't_cover_small')}
+                        src={download.gameImage.replace(/t_thumb|t_cover_small/g, 't_cover_small')}
                         alt={download.gameName}
                         className="w-16 h-20 object-cover rounded-md bg-gray-700"
                         onError={(e) => {
@@ -304,20 +334,31 @@ function GameDownloadsManager({ onGameSelect }) {
                     </div>
 
                     {/* Progress Bar */}
-                    {(download.status === 'downloading' || download.status === 'torrent_downloading') && (
+                    {(download.status === 'downloading' || 
+                      download.status === 'torrent_downloading' ||
+                      download.status === 'extracting' ||
+                      download.status === 'download_complete' ||
+                      download.status === 'extraction_complete') && (
                       <div className="mb-3">
                         <div className="flex justify-between items-center mb-1">
                           <span className="text-xs text-gray-400">
-                            {download.progress.toFixed(1)}%
+                            {download.status === 'extracting' 
+                              ? `Extracting... ${(download.extractionProgress || 0).toFixed(1)}%`
+                              : download.status === 'download_complete'
+                              ? 'Download Complete - Starting Extraction...'
+                              : download.status === 'extraction_complete'
+                              ? 'Extraction Complete - Setting up game...'
+                              : `${download.progress.toFixed(1)}%`
+                            }
                           </span>
                           <div className="text-xs text-gray-400 space-x-2">
-                            {download.downloadedBytes > 0 && (
+                            {download.downloadedBytes > 0 && download.status === 'downloading' && (
                               <span>{formatFileSize(download.downloadedBytes)}</span>
                             )}
-                            {download.totalBytes > 0 && (
+                            {download.totalBytes > 0 && download.status === 'downloading' && (
                               <span>/ {formatFileSize(download.totalBytes)}</span>
                             )}
-                            {download.downloadSpeed > 0 && (
+                            {download.downloadSpeed > 0 && download.status === 'downloading' && (
                               <span>• {formatSpeed(download.downloadSpeed)}</span>
                             )}
                           </div>
@@ -325,9 +366,22 @@ function GameDownloadsManager({ onGameSelect }) {
                         <div className="w-full bg-gray-700 rounded-full h-2">
                           <div
                             className={`h-2 rounded-full transition-all duration-300 ${getProgressColor(download.status)}`}
-                            style={{ width: `${Math.min(100, Math.max(0, download.progress))}%` }}
+                            style={{ 
+                              width: `${Math.min(100, Math.max(0, 
+                                download.status === 'extracting' 
+                                  ? download.extractionProgress || 0
+                                  : download.status === 'download_complete' || download.status === 'extraction_complete'
+                                  ? 100
+                                  : download.progress
+                              ))}%` 
+                            }}
                           ></div>
                         </div>
+                        {download.status === 'extracting' && (
+                          <div className="text-xs text-gray-500 mt-1">
+                            Extracting game files to final location...
+                          </div>
+                        )}
                       </div>
                     )}
 

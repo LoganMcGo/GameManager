@@ -481,31 +481,62 @@ class GameLauncherService {
 
   monitorRunningGames() {
     // Check if any running games have actually stopped
-    for (const [gameId, gameProcess] of this.runningGames.entries()) {
-      try {
-        // Check if the process is still running
-        if (process.platform === 'win32') {
-          exec(`tasklist /FI "PID eq ${gameProcess.pid}"`, (error, stdout) => {
-            if (error || !stdout.includes(gameProcess.pid.toString())) {
-              console.log(`🛑 Detected game exit: ${gameProcess.gameName}`);
-              this.runningGames.delete(gameId);
-            }
-          });
-        } else {
-          // On Unix-like systems, check if process exists
-          try {
-            process.kill(gameProcess.pid, 0);
-          } catch (error) {
-            if (error.code === 'ESRCH') {
-              console.log(`🛑 Detected game exit: ${gameProcess.gameName}`);
-              this.runningGames.delete(gameId);
-            }
-          }
-        }
-      } catch (error) {
-        console.warn(`Warning: Error monitoring game process ${gameId}:`, error.message);
-      }
+    const gamesToCheck = Array.from(this.runningGames.entries());
+    
+    for (const [gameId, gameProcess] of gamesToCheck) {
+      this.checkGameProcess(gameId, gameProcess);
     }
+  }
+
+  async checkGameProcess(gameId, gameProcess) {
+    try {
+      let processRunning = false;
+      
+      if (process.platform === 'win32') {
+        // Use Promise-based approach for Windows
+        try {
+          const { exec } = require('child_process');
+          const { promisify } = require('util');
+          const execAsync = promisify(exec);
+          
+          const { stdout } = await execAsync(`tasklist /FI "PID eq ${gameProcess.pid}" /FO CSV 2>nul`);
+          processRunning = stdout.includes(`"${gameProcess.pid}"`);
+        } catch (error) {
+          processRunning = false;
+        }
+      } else {
+        // On Unix-like systems, check if process exists
+        try {
+          process.kill(gameProcess.pid, 0);
+          processRunning = true;
+        } catch (error) {
+          processRunning = error.code !== 'ESRCH';
+        }
+      }
+      
+      if (!processRunning) {
+        console.log(`🛑 Detected external game exit: ${gameProcess.gameName} (PID: ${gameProcess.pid})`);
+        this.runningGames.delete(gameId);
+        
+        // Notify UI about game closure
+        this.notifyGameClosed(gameId, gameProcess.gameName);
+      }
+    } catch (error) {
+      console.warn(`Warning: Error monitoring game process ${gameId}:`, error.message);
+    }
+  }
+
+  notifyGameClosed(gameId, gameName) {
+    // Send notification to all renderer processes
+    if (global.mainWindow) {
+      global.mainWindow.webContents.send('launcher:game-closed', {
+        gameId,
+        gameName,
+        timestamp: Date.now()
+      });
+    }
+    
+    console.log(`📢 Notified UI about game closure: ${gameName}`);
   }
 
   cleanup() {
