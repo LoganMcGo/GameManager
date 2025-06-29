@@ -228,13 +228,15 @@ class GameDownloadService {
 
             // Calculate progress and speed
             const now = Date.now();
-            if (now - lastUpdate > 1000) { // Update every second
+            if (now - lastUpdate > 500) { // Update every 500ms for real-time progress
               const elapsed = (now - downloadStatus.startTime) / 1000;
               downloadStatus.speed = downloadedBytes / elapsed;
               downloadStatus.progress = totalBytes > 0 ? (downloadedBytes / totalBytes) * 100 : 0;
               
               this.activeDownloads.set(downloadStatus.id, downloadStatus);
               lastUpdate = now;
+              
+              console.log(`📈 Download progress: ${downloadStatus.filename} - ${downloadStatus.progress.toFixed(1)}%`);
             }
           });
 

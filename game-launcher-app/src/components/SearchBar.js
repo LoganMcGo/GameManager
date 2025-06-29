@@ -1,8 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useIgdb } from '../context/IgdbContext';
-import { useNotifications } from '../context/NotificationContext';
-import { createNotificationHandlers } from '../services/notificationService';
-import gameFinderService from '../services/gameFinderService';
 
 const SearchBar = ({ onGameSelect, isMainPage = false }) => {
   const [query, setQuery] = useState('');
@@ -10,10 +7,8 @@ const SearchBar = ({ onGameSelect, isMainPage = false }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [isDownloading, setIsDownloading] = useState(new Set());
   
   const { searchGames } = useIgdb();
-  const notifications = createNotificationHandlers(useNotifications);
   const searchRef = useRef(null);
   const dropdownRef = useRef(null);
   const timeoutRef = useRef(null);
@@ -76,60 +71,7 @@ const SearchBar = ({ onGameSelect, isMainPage = false }) => {
     }
   };
 
-  // Handle game download
-  const handleGameDownload = async (game, event) => {
-    event.stopPropagation(); // Prevent game selection
-    
-    const gameId = game.appId;
-    
-    // Prevent multiple downloads of the same game
-    if (isDownloading.has(gameId)) {
-      notifications.notifyWarning('Download already in progress', {
-        subtitle: `${game.name} is already being downloaded`
-      });
-      return;
-    }
-    
-    setIsDownloading(prev => new Set(prev).add(gameId));
 
-    await notifications.withDownloadNotifications(
-      async ({ onProgress }) => {
-        onProgress(0, 'Searching for torrents...');
-        
-        const result = await gameFinderService.downloadGame(game.name);
-        
-        if (!result.success) {
-          throw new Error(result.error || 'Download failed');
-        }
-        
-        onProgress(50, 'Found torrent, adding to Real-Debrid...');
-        
-        // Give time for the progress to show
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        onProgress(100, 'Added to Real-Debrid successfully!');
-        
-        return result;
-      },
-      {
-        downloadName: game.name,
-        onSuccess: () => {
-          setIsDownloading(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(gameId);
-            return newSet;
-          });
-        },
-        onError: () => {
-          setIsDownloading(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(gameId);
-            return newSet;
-          });
-        }
-      }
-    );
-  };
 
   // Handle click outside to close dropdown
   useEffect(() => {
@@ -306,26 +248,21 @@ const SearchBar = ({ onGameSelect, isMainPage = false }) => {
                         </p>
                       </div>
 
-                      {/* Download Button & Status */}
+                      {/* View Details Button */}
                       <div className="flex-shrink-0">
-                        {isDownloading.has(game.appId) ? (
-                          <div className="text-center min-w-[80px]">
-                            <div className="flex flex-col items-center">
-                              <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-400 mb-1"></div>
-                              <span className="text-xs text-blue-400">Downloading...</span>
-                            </div>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={(e) => handleGameDownload(game, e)}
-                            className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-md text-xs transition-colors duration-300 flex items-center space-x-1"
-                          >
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                            <span>Download</span>
-                          </button>
-                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation(); // Prevent game selection from parent click
+                            handleGameSelect(game);
+                          }}
+                          className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-md text-xs transition-colors duration-300 flex items-center space-x-1"
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                          <span>View Details</span>
+                        </button>
                       </div>
                     </div>
                   ))}

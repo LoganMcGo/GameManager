@@ -1,5 +1,6 @@
 const { ipcMain } = require('electron');
 const Store = require('electron-store');
+const { getOptimizedMonitor } = require('./optimizedDownloadMonitor');
 
 // Store for tracking game downloads
 const downloadStore = new Store({
@@ -37,15 +38,25 @@ const STATUS_MESSAGES = {
   [DOWNLOAD_STATUS.EXTRACTING]: 'Extracting files...',
   [DOWNLOAD_STATUS.EXTRACTION_COMPLETE]: 'Extraction Complete',
   [DOWNLOAD_STATUS.FINDING_EXECUTABLE]: 'Setting up game...',
-  [DOWNLOAD_STATUS.COMPLETE]: 'Ready to Play',
+  [DOWNLOAD_STATUS.COMPLETE]: 'Game is ready',
   [DOWNLOAD_STATUS.ERROR]: 'Error'
 };
 
-// Active monitoring intervals
-const monitoringIntervals = new Map();
+// Optimized monitor instance
+let optimizedMonitor = null;
 
 // Initialize the service
 function initGameDownloadTracker() {
+  // Initialize optimized monitor
+  optimizedMonitor = getOptimizedMonitor();
+  
+  // Set up optimized monitor event handlers
+  optimizedMonitor.on('start-local-download', startLocalDownload);
+  optimizedMonitor.on('find-executable', findAndSetupExecutable);
+  
+  // Start optimized monitoring
+  optimizedMonitor.startMonitoring();
+  
   // Register IPC handlers
   ipcMain.handle('download-tracker:get-downloads', getTrackedDownloads);
   ipcMain.handle('download-tracker:remove-download', removeTrackedDownload);
@@ -53,7 +64,9 @@ function initGameDownloadTracker() {
   ipcMain.handle('download-tracker:start-tracking', handleStartTracking);
   ipcMain.handle('download-tracker:update-status', handleUpdateStatus);
   
-  console.log('Game Download Tracker service initialized');
+  // Add new IPC handlers for optimized monitoring
+  ipcMain.handle('download-tracker:get-statistics', () => optimizedMonitor.getStatistics());
+  ipcMain.handle('download-tracker:update-config', (event, config) => optimizedMonitor.updateConfig(config));
 }
 
 // IPC handler for starting tracking
@@ -67,6 +80,8 @@ function handleUpdateStatus(event, downloadId, status, data) {
   updateDownloadStatus(downloadId, status, data);
   return { success: true };
 }
+
+
 
 // Start tracking a new game download
 function startTracking(gameData, magnetLink, torrentId = null, torrentName = null) {
@@ -112,8 +127,7 @@ function startTracking(gameData, magnetLink, torrentId = null, torrentName = nul
   downloads[downloadId] = download;
   downloadStore.set('downloads', downloads);
   
-  // Start monitoring this download
-  startMonitoring(downloadId);
+  // Monitoring is handled by the optimized monitor automatically
   
   console.log(`Started tracking download for game: ${gameData.name}${gameImage ? ` with image: ${gameImage}` : ' (no image found)'}`);
   return downloadId;
@@ -144,166 +158,22 @@ function updateDownloadStatus(downloadId, status, data = {}) {
   console.log(`Updated download ${downloadId} status: ${status}`);
   
   // Emit update to UI
-  if (global.mainWindow) {
-    global.mainWindow.webContents.send('download-tracker:update', download);
+  const { BrowserWindow } = require('electron');
+  let mainWindow = global.mainWindow;
+  
+  if (!mainWindow) {
+    // Try to get the main window from BrowserWindow
+    const allWindows = BrowserWindow.getAllWindows();
+    mainWindow = allWindows.find(win => !win.isDestroyed()) || allWindows[0];
+  }
+  
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('download-tracker:update', download);
   }
 }
 
-// Start monitoring a download
-async function startMonitoring(downloadId) {
-  if (monitoringIntervals.has(downloadId)) {
-    clearInterval(monitoringIntervals.get(downloadId));
-  }
-  
-  const interval = setInterval(async () => {
-    await monitorDownloadProgress(downloadId);
-  }, 2000); // Check every 2 seconds
-  
-  monitoringIntervals.set(downloadId, interval);
-}
-
-// Monitor download progress
-async function monitorDownloadProgress(downloadId) {
-  try {
-    const downloads = downloadStore.get('downloads', {});
-    const download = downloads[downloadId];
-    
-    if (!download || download.status === DOWNLOAD_STATUS.COMPLETE || download.status === DOWNLOAD_STATUS.ERROR) {
-      stopMonitoring(downloadId);
-      return;
-    }
-    
-    console.log(`🔍 Monitoring download ${downloadId} - Status: ${download.status}, TorrentID: ${download.torrentId || 'none'}, LocalID: ${download.localDownloadId || 'none'}`);
-    
-    const realDebridService = require('./realDebridService');
-    
-    // Check torrent status if we have a torrent ID and we're not yet in local download phase
-    if (download.torrentId && !download.localDownloadId && download.status !== DOWNLOAD_STATUS.DOWNLOADING && download.status !== DOWNLOAD_STATUS.EXTRACTING) {
-      console.log(`📋 Checking torrent status for ${download.torrentId}`);
-      const torrentInfo = await realDebridService.getTorrentInfo(download.torrentId);
-      
-      if (torrentInfo.success) {
-        const torrent = torrentInfo.data;
-        console.log(`📊 Torrent ${download.torrentId} status: ${torrent.status}, progress: ${torrent.progress || 0}%`);
-        
-        switch (torrent.status) {
-          case 'magnet_conversion':
-            updateDownloadStatus(downloadId, DOWNLOAD_STATUS.STARTING_TORRENT);
-            break;
-            
-          case 'waiting_files_selection':
-            updateDownloadStatus(downloadId, DOWNLOAD_STATUS.STARTING_TORRENT);
-            break;
-            
-          case 'queued':
-          case 'downloading':
-            updateDownloadStatus(downloadId, DOWNLOAD_STATUS.TORRENT_DOWNLOADING, {
-              progress: torrent.progress || 0
-            });
-            break;
-            
-          case 'downloaded':
-            console.log(`✅ Torrent downloaded! Starting local download for ${download.gameName}`);
-            
-            // Only start local download if we don't already have one
-            if (!download.localDownloadId) {
-              updateDownloadStatus(downloadId, DOWNLOAD_STATUS.FILE_READY);
-              // Start local download
-              setTimeout(() => startLocalDownload(downloadId, torrent), 1000);
-            } else {
-              console.log(`📋 Local download already exists for ${download.gameName} (ID: ${download.localDownloadId})`);
-            }
-            break;
-            
-          case 'error':
-          case 'virus':
-          case 'dead':
-            console.error(`❌ Torrent failed with status: ${torrent.status}`);
-            updateDownloadStatus(downloadId, DOWNLOAD_STATUS.ERROR, {
-              error: `Torrent failed: ${torrent.status}`
-            });
-            break;
-        }
-      } else {
-        console.warn(`⚠️ Failed to get torrent info for ${download.torrentId}: ${torrentInfo.error}`);
-      }
-    }
-    
-    // Check local download progress if we have a local download ID
-    if (download.localDownloadId && (download.status === DOWNLOAD_STATUS.DOWNLOADING || download.status === DOWNLOAD_STATUS.EXTRACTING || download.status === DOWNLOAD_STATUS.DOWNLOAD_COMPLETE || download.status === DOWNLOAD_STATUS.EXTRACTION_COMPLETE)) {
-      console.log(`📊 Checking local download progress for ${download.localDownloadId}`);
-      const localProgress = await getLocalDownloadProgress(download.localDownloadId);
-      if (localProgress) {
-        console.log(`📈 Local progress: ${localProgress.progress.toFixed(1)}% Status: ${localProgress.status}`);
-        
-        // Handle different local download statuses - only update if it's a progression
-        switch (localProgress.status) {
-          case 'downloading':
-            if (download.status === DOWNLOAD_STATUS.DOWNLOADING || download.status === DOWNLOAD_STATUS.STARTING_DOWNLOAD) {
-              updateDownloadStatus(downloadId, DOWNLOAD_STATUS.DOWNLOADING, {
-                progress: localProgress.progress,
-                downloadedBytes: localProgress.downloadedBytes,
-                totalBytes: localProgress.totalBytes,
-                downloadSpeed: localProgress.speed
-              });
-            }
-            break;
-            
-          case 'download_complete':
-            if (download.status === DOWNLOAD_STATUS.DOWNLOADING || download.status === DOWNLOAD_STATUS.STARTING_DOWNLOAD) {
-              console.log(`📦 Download completed for ${download.gameName}, starting extraction...`);
-              updateDownloadStatus(downloadId, DOWNLOAD_STATUS.DOWNLOAD_COMPLETE, {
-                progress: 100,
-                downloadedBytes: localProgress.totalBytes,
-                totalBytes: localProgress.totalBytes
-              });
-            }
-            break;
-            
-          case 'extracting':
-            if (download.status === DOWNLOAD_STATUS.DOWNLOADING || download.status === DOWNLOAD_STATUS.DOWNLOAD_COMPLETE || download.status === DOWNLOAD_STATUS.EXTRACTING) {
-              updateDownloadStatus(downloadId, DOWNLOAD_STATUS.EXTRACTING, {
-                progress: localProgress.extractionProgress || 0,
-                extractionProgress: localProgress.extractionProgress || 0
-              });
-            }
-            break;
-            
-          case 'extraction_complete':
-            if (download.status === DOWNLOAD_STATUS.EXTRACTING || download.status === DOWNLOAD_STATUS.DOWNLOAD_COMPLETE) {
-              console.log(`🎉 Extraction completed for ${download.gameName}, finding executable...`);
-              updateDownloadStatus(downloadId, DOWNLOAD_STATUS.EXTRACTION_COMPLETE);
-              // Start finding executable
-              setTimeout(() => findAndSetupExecutable(downloadId), 1000);
-            }
-            break;
-            
-          case 'complete':
-            if (download.status !== DOWNLOAD_STATUS.COMPLETE) {
-              console.log(`🎮 Game setup completed for ${download.gameName}!`);
-              updateDownloadStatus(downloadId, DOWNLOAD_STATUS.COMPLETE);
-            }
-            break;
-            
-          case 'error':
-            console.error(`❌ Local download/extraction failed for ${download.gameName}: ${localProgress.error}`);
-            updateDownloadStatus(downloadId, DOWNLOAD_STATUS.ERROR, {
-              error: localProgress.error || 'Download or extraction failed'
-            });
-            break;
-        }
-      } else {
-        console.warn(`⚠️ No progress info available for local download ${download.localDownloadId}`);
-      }
-    }
-    
-  } catch (error) {
-    console.error(`❌ Error monitoring download ${downloadId}:`, error);
-    updateDownloadStatus(downloadId, DOWNLOAD_STATUS.ERROR, {
-      error: error.message
-    });
-  }
-}
+// Note: Old monitoring functions have been replaced by the OptimizedDownloadMonitor
+// All monitoring is now handled centrally by the optimized monitoring service
 
 // Start local download from Real-Debrid
 async function startLocalDownload(downloadId, torrentData) {
@@ -442,13 +312,8 @@ async function getLocalDownloadProgress(localDownloadId) {
   }
 }
 
-// Stop monitoring a download
-function stopMonitoring(downloadId) {
-  if (monitoringIntervals.has(downloadId)) {
-    clearInterval(monitoringIntervals.get(downloadId));
-    monitoringIntervals.delete(downloadId);
-  }
-}
+// Note: stopMonitoring is now handled automatically by the OptimizedDownloadMonitor
+// when downloads reach complete/error status
 
 // Get all tracked downloads
 function getTrackedDownloads() {
@@ -462,7 +327,7 @@ function removeTrackedDownload(event, downloadId) {
   delete downloads[downloadId];
   downloadStore.set('downloads', downloads);
   
-  stopMonitoring(downloadId);
+  // Monitoring cleanup is handled automatically by OptimizedDownloadMonitor
   
   console.log(`Removed tracked download: ${downloadId}`);
   return { success: true };
@@ -476,9 +341,8 @@ function clearCompletedDownloads() {
   Object.values(downloads).forEach(download => {
     if (download.status !== DOWNLOAD_STATUS.COMPLETE) {
       activeDownloads[download.id] = download;
-    } else {
-      stopMonitoring(download.id);
     }
+    // Monitoring cleanup is handled automatically by OptimizedDownloadMonitor
   });
   
   downloadStore.set('downloads', activeDownloads);

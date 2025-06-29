@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useLibrary } from '../context/LibraryContext';
 import { useAuth } from '../context/AuthContext';
-import SearchBar from './SearchBar';
 import AvailableDownloads from './AvailableDownloads';
 
 function Library({ onGameSelect }) {
@@ -20,6 +19,9 @@ function Library({ onGameSelect }) {
   const [gameStatuses, setGameStatuses] = useState(new Map());
   const [statusUpdateDebounce, setStatusUpdateDebounce] = useState(new Map());
   const [isCheckingInstalled, setIsCheckingInstalled] = useState(false);
+  const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  const [gameToUninstall, setGameToUninstall] = useState(null);
+  const [isUninstalling, setIsUninstalling] = useState(false);
 
   // Check for installed games and Real-Debrid downloads
   useEffect(() => {
@@ -64,7 +66,6 @@ function Library({ onGameSelect }) {
         const newStatus = {
           status: download.status,
           progress: download.progress || 0,
-          extractionProgress: download.extractionProgress || 0,
           gameDirectory: download.gameDirectory,
           executablePath: download.executablePath,
           needsManualSetup: download.needsManualSetup,
@@ -89,6 +90,8 @@ function Library({ onGameSelect }) {
         newSet.delete(gameData.gameId);
         return newSet;
       });
+      // Force immediate check of all running games to ensure consistency
+      setTimeout(() => checkRunningGames(), 100);
     });
 
     return () => {
@@ -115,13 +118,21 @@ function Library({ onGameSelect }) {
     checkActiveDownloads();
     checkRunningGames();
 
+    // More frequent monitoring for running games to catch external closures
+    const runningGamesInterval = setInterval(() => {
+      if (runningGames.size > 0) {
+        checkRunningGames();
+      }
+    }, 3000); // Check every 3 seconds when games are running
+
     return () => {
       // Clean up global function
       if (window.libraryForceRefresh) {
         delete window.libraryForceRefresh;
       }
+      clearInterval(runningGamesInterval);
     };
-  }, [library]);
+  }, [library, runningGames.size]);
 
   // Force refresh when component becomes visible
   useEffect(() => {
@@ -147,14 +158,27 @@ function Library({ onGameSelect }) {
       }, 100);
     };
 
+    const handleKeyPress = (e) => {
+      // F5 or Ctrl+R to force refresh library status
+      if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
+        e.preventDefault();
+        console.log('🔄 Manual library refresh triggered (F5/Ctrl+R)');
+        checkInstalledGames();
+        checkActiveDownloads();
+        checkRunningGames();
+      }
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('navigateToLibrary', handleNavigationRefresh);
     window.addEventListener('libraryRefresh', handleNavigationRefresh);
+    document.addEventListener('keydown', handleKeyPress);
     
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('navigateToLibrary', handleNavigationRefresh);
       window.removeEventListener('libraryRefresh', handleNavigationRefresh);
+      document.removeEventListener('keydown', handleKeyPress);
     };
   }, [library]);
 
@@ -226,7 +250,17 @@ function Library({ onGameSelect }) {
   const checkRunningGames = async () => {
     try {
       const runningGameIds = await window.api.launcher.getRunningGames();
-      setRunningGames(new Set(runningGameIds));
+      const newRunningGames = new Set(runningGameIds);
+      
+      // Check if any previously running games have stopped
+      const currentRunning = runningGames;
+      const stoppedGames = [...currentRunning].filter(gameId => !newRunningGames.has(gameId));
+      
+      if (stoppedGames.length > 0) {
+        console.log('🛑 Detected externally stopped games:', stoppedGames);
+      }
+      
+      setRunningGames(newRunningGames);
     } catch (error) {
       console.warn('Failed to check running games:', error);
     }
@@ -288,7 +322,6 @@ function Library({ onGameSelect }) {
                 const newStatus = {
                   status: download.status,
                   progress: download.progress || 0,
-                  extractionProgress: download.extractionProgress || 0,
                   gameDirectory: download.gameDirectory,
                   executablePath: download.executablePath,
                   needsManualSetup: download.needsManualSetup,
@@ -409,8 +442,8 @@ function Library({ onGameSelect }) {
               newSet.delete(game.appId);
               return newSet;
             });
-            // Immediate check to update status
-            setTimeout(() => checkInstalledGames(), 200);
+            // Force immediate status update
+            checkRunningGames();
           } else {
             console.error('Failed to stop game:', result.error);
           }
@@ -446,8 +479,8 @@ function Library({ onGameSelect }) {
           if (result.success) {
             console.log('Game launched successfully');
             setRunningGames(prev => new Set(prev).add(game.appId));
-            // Immediate check to update status
-            setTimeout(() => checkInstalledGames(), 200);
+            // Force immediate status update without delay
+            checkRunningGames();
           } else if (result.needsManualSetup) {
             await handleExecutableSelection(game, gameInfo);
           } else {
@@ -596,10 +629,9 @@ function Library({ onGameSelect }) {
         case 'extracting':
           return { 
             status: 'extracting', 
-            text: `🔧 Extracting ${(gameStatus.extractionProgress || 0).toFixed(1)}%`, 
+            text: '🔧 Extracting...', 
             color: 'text-purple-400', 
-            action: 'View Progress',
-            progress: gameStatus.extractionProgress || 0
+            action: 'View Progress'
           };
         case 'extraction_complete':
           return { 
@@ -697,6 +729,84 @@ function Library({ onGameSelect }) {
         behavior: 'smooth', 
         block: 'start' 
       });
+    }
+  };
+
+  // Handle uninstall button click
+  const handleUninstallClick = (game) => {
+    setGameToUninstall(game);
+    setShowUninstallConfirm(true);
+  };
+
+  // Handle uninstall confirmation
+  const handleUninstallConfirm = async () => {
+    if (!gameToUninstall) return;
+    
+    setIsUninstalling(true);
+    try {
+      const downloadLocation = await window.api.download.getDownloadLocation();
+      const trackedStatus = gameStatuses.get(gameToUninstall.appId);
+      
+      // Determine game directory
+      const gameDirectory = trackedStatus?.gameDirectory || 
+        `${downloadLocation}/${gameToUninstall.name.replace(/[<>:"/\\|?*]/g, '_')}`;
+      
+      // Check if the directory exists
+      const directoryExists = await window.api.launcher.checkDirectoryExists(gameDirectory);
+      
+      if (!directoryExists) {
+        console.log('Game directory does not exist, considering uninstalled');
+        // Update status and remove from installed games
+        setInstalledGames(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(gameToUninstall.appId);
+          return newSet;
+        });
+        setGameStatuses(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(gameToUninstall.appId);
+          return newMap;
+        });
+        setShowUninstallConfirm(false);
+        setGameToUninstall(null);
+        return;
+      }
+      
+      // Try to find and run uninstaller first
+      const uninstallResult = await window.api.launcher.uninstallGame({
+        gameId: gameToUninstall.appId,
+        gameName: gameToUninstall.name,
+        gameDirectory: gameDirectory
+      });
+      
+      if (uninstallResult.success) {
+        console.log('Game uninstalled successfully');
+        
+        // Update state to reflect uninstallation
+        setInstalledGames(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(gameToUninstall.appId);
+          return newSet;
+        });
+        
+        // Clear game status
+        setGameStatuses(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(gameToUninstall.appId);
+          return newMap;
+        });
+        
+        // Trigger a refresh to update the UI
+        setTimeout(() => checkInstalledGames(), 1000);
+      } else {
+        console.error('Failed to uninstall game:', uninstallResult.error);
+      }
+    } catch (error) {
+      console.error('Error during uninstallation:', error);
+    } finally {
+      setIsUninstalling(false);
+      setShowUninstallConfirm(false);
+      setGameToUninstall(null);
     }
   };
 
@@ -831,7 +941,7 @@ function Library({ onGameSelect }) {
                 </div>
 
                 {/* Available Downloads - Only show if not installed and not downloading */}
-                {gameStatus.status !== 'installed' && gameStatus.status !== 'downloading' && (
+                {gameStatus.status !== 'installed' && gameStatus.status !== 'ready_to_play' && gameStatus.status !== 'downloading' && gameStatus.status !== 'running' && (
                   <AvailableDownloads 
                     gameName={gameData.name} 
                     gameId={gameData.appId} 
@@ -903,6 +1013,17 @@ function Library({ onGameSelect }) {
                     >
                       {isFavorited(gameData.appId) ? '❤ Remove from Favorites' : '♡ Add to Favorites'}
                     </button>
+                    {(gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' || gameStatus.status === 'downloaded') && (
+                      <button
+                        onClick={() => handleUninstallClick(gameData)}
+                        className="w-full px-3 py-2 rounded text-sm bg-orange-600 hover:bg-orange-700 text-white transition-colors flex items-center justify-center"
+                      >
+                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                        </svg>
+                        Uninstall Game
+                      </button>
+                    )}
                     <button
                       onClick={() => removeFromLibrary(gameData.appId)}
                       className="w-full px-3 py-2 rounded text-sm bg-gray-700 hover:bg-red-600 text-gray-300 hover:text-white transition-colors"
@@ -923,6 +1044,58 @@ function Library({ onGameSelect }) {
             </div>
           </div>
         </div>
+
+        {/* Uninstall Confirmation Dialog */}
+        {showUninstallConfirm && gameToUninstall && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
+              <div className="flex items-center mb-4">
+                <div className="flex-shrink-0 w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center mr-3">
+                  <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"></path>
+                  </svg>
+                </div>
+                <h3 className="text-lg font-medium text-white">Uninstall Game</h3>
+              </div>
+              
+              <div className="mb-4">
+                <p className="text-gray-300 mb-2">
+                  Are you sure you want to uninstall <strong>{gameToUninstall.name}</strong>?
+                </p>
+                <p className="text-red-400 text-sm">
+                  ⚠️ You may lose any game save data that isn't stored in the cloud. This action cannot be undone.
+                </p>
+              </div>
+              
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => {
+                    setShowUninstallConfirm(false);
+                    setGameToUninstall(null);
+                  }}
+                  disabled={isUninstalling}
+                  className="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUninstallConfirm}
+                  disabled={isUninstalling}
+                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center"
+                >
+                  {isUninstalling ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
+                      Uninstalling...
+                    </>
+                  ) : (
+                    'Yes, Uninstall'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -931,9 +1104,6 @@ function Library({ onGameSelect }) {
     <div className="flex flex-col h-full bg-gray-900 text-white main-container">
       {/* Fixed Header Section */}
       <div className="flex-shrink-0 p-4 sm:p-6 pb-0">
-        {/* Search Bar */}
-        <SearchBar onGameSelect={onGameSelect} />
-        
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 mt-6">
           <div>
@@ -1064,12 +1234,12 @@ function Library({ onGameSelect }) {
                     {/* Status Indicators */}
                     <div className="absolute top-2 left-2 flex flex-col space-y-1">
                       <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        gameStatus.status === 'installed' ? 'bg-green-600 text-white' :
+                        gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' ? 'bg-green-600 text-white' :
                         gameStatus.status === 'downloading' ? 'bg-blue-600 text-white' :
                         gameStatus.status === 'downloaded' ? 'bg-yellow-600 text-white' :
                         'bg-gray-600 text-gray-300'
                       }`}>
-                        {gameStatus.status === 'installed' ? 'Installed' :
+                        {gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' ? 'Installed' :
                          gameStatus.status === 'downloading' ? 'Downloading' :
                          gameStatus.status === 'downloaded' ? 'Downloaded' :
                          'Not Downloaded'}

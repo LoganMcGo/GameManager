@@ -139,9 +139,9 @@ class GameExtractionService {
             return;
           
           case '.rar':
-            // Try WinRAR or 7-Zip
-            command = 'UnRAR.exe';
-            args = ['x', '-y', extractionStatus.filePath, extractionStatus.tempPath + '\\'];
+            // Try 7-Zip first (more reliable), then WinRAR
+            command = '7z.exe';
+            args = ['x', `-o${extractionStatus.tempPath}`, '-y', extractionStatus.filePath];
             break;
           
           case '.7z':
@@ -161,7 +161,7 @@ class GameExtractionService {
         }
 
         // Try to find the extraction tool
-        this.findExtractionTool(command, (toolPath) => {
+        this.findExtractionTool(command, fileExtension, (toolPath, actualCommand, actualArgs) => {
           if (!toolPath) {
             // Fallback to built-in extraction for supported formats
             if (fileExtension === '.zip') {
@@ -170,11 +170,23 @@ class GameExtractionService {
             }
             
             extractionStatus.status = 'failed';
-            extractionStatus.error = `Extraction tool not found for ${fileExtension} files`;
+            extractionStatus.error = `No extraction tool found for ${fileExtension} files. Please install 7-Zip or WinRAR.`;
             this.activeExtractions.set(extractionStatus.id, extractionStatus);
             reject(new Error(extractionStatus.error));
             return;
           }
+
+          // Use the found tool and its specific arguments
+          command = actualCommand;
+          if (typeof actualArgs === 'function') {
+            // For RAR files, generate arguments using the function
+            args = actualArgs(extractionStatus.filePath, extractionStatus.tempPath);
+          } else if (actualArgs) {
+            args = actualArgs;
+          }
+
+          console.log(`Using extraction tool: ${command}`);
+          console.log(`Arguments: ${args.join(' ')}`);
 
           // Execute extraction
           const process = spawn(toolPath, args);
@@ -225,7 +237,46 @@ class GameExtractionService {
   // Built-in ZIP extraction using Node.js
   async extractZip(extractionStatus, resolve, reject) {
     try {
-      const AdmZip = require('adm-zip');
+      let AdmZip;
+      try {
+        AdmZip = require('adm-zip');
+      } catch (requireError) {
+        // Fallback to 7-Zip if AdmZip is not available
+        console.warn('AdmZip not available, falling back to 7-Zip for ZIP extraction');
+        this.findExtractionTool('7z.exe', '.zip', (toolPath, actualCommand, actualArgs) => {
+          if (!toolPath) {
+            extractionStatus.status = 'failed';
+            extractionStatus.error = 'No ZIP extraction tool available. Please install 7-Zip.';
+            this.activeExtractions.set(extractionStatus.id, extractionStatus);
+            reject(new Error(extractionStatus.error));
+            return;
+          }
+
+          // Use 7-Zip for extraction
+          const args = ['x', `-o${extractionStatus.tempPath}`, '-y', extractionStatus.filePath];
+          const process = spawn(toolPath, args);
+
+          process.on('close', (code) => {
+            if (code === 0) {
+              this.moveExtractedFiles(extractionStatus, resolve, reject);
+            } else {
+              extractionStatus.status = 'failed';
+              extractionStatus.error = `ZIP extraction failed with code ${code}`;
+              this.activeExtractions.set(extractionStatus.id, extractionStatus);
+              reject(new Error(extractionStatus.error));
+            }
+          });
+
+          process.on('error', (error) => {
+            extractionStatus.status = 'failed';
+            extractionStatus.error = error.message;
+            this.activeExtractions.set(extractionStatus.id, extractionStatus);
+            reject(error);
+          });
+        });
+        return;
+      }
+
       const zip = new AdmZip(extractionStatus.filePath);
       const entries = zip.getEntries();
       
@@ -264,8 +315,14 @@ class GameExtractionService {
     }
   }
 
-  findExtractionTool(toolName, callback) {
-    // Common paths where extraction tools might be installed
+  findExtractionTool(toolName, fileExtension, callback) {
+    // For RAR files, try multiple tools in order of preference
+    if (fileExtension === '.rar') {
+      this.findRarExtractionTool(callback);
+      return;
+    }
+
+    // For other formats, use the original logic
     const commonPaths = [
       `C:\\Program Files\\7-Zip\\${toolName}`,
       `C:\\Program Files (x86)\\7-Zip\\${toolName}`,
@@ -280,7 +337,7 @@ class GameExtractionService {
     // Check if tool exists in common paths
     for (const toolPath of commonPaths) {
       if (fs.existsSync(toolPath)) {
-        callback(toolPath);
+        callback(toolPath, toolName);
         return;
       }
     }
@@ -288,11 +345,70 @@ class GameExtractionService {
     // Try to find in PATH
     exec(`where ${toolName}`, (error, stdout) => {
       if (!error && stdout.trim()) {
-        callback(stdout.trim().split('\n')[0]);
+        callback(stdout.trim().split('\n')[0], toolName);
       } else {
         callback(null);
       }
     });
+  }
+
+  findRarExtractionTool(callback) {
+    // Try tools in order of preference: 7-Zip, WinRAR, UnRAR
+    const tools = [
+      {
+        name: '7z.exe',
+        paths: [
+          'C:\\Program Files\\7-Zip\\7z.exe',
+          'C:\\Program Files (x86)\\7-Zip\\7z.exe',
+          path.join(process.env.PROGRAMFILES || '', '7-Zip', '7z.exe'),
+          path.join(process.env['PROGRAMFILES(X86)'] || '', '7-Zip', '7z.exe')
+        ],
+        getArgs: (filePath, tempPath) => ['x', `-o${tempPath}`, '-y', filePath]
+      },
+      {
+        name: 'WinRAR.exe',
+        paths: [
+          'C:\\Program Files\\WinRAR\\WinRAR.exe',
+          'C:\\Program Files (x86)\\WinRAR\\WinRAR.exe',
+          path.join(process.env.PROGRAMFILES || '', 'WinRAR', 'WinRAR.exe'),
+          path.join(process.env['PROGRAMFILES(X86)'] || '', 'WinRAR', 'WinRAR.exe')
+        ],
+        getArgs: (filePath, tempPath) => ['x', '-y', filePath, tempPath + '\\']
+      },
+      {
+        name: 'UnRAR.exe',
+        paths: [
+          'C:\\Program Files\\WinRAR\\UnRAR.exe',
+          'C:\\Program Files (x86)\\WinRAR\\UnRAR.exe',
+          path.join(process.env.PROGRAMFILES || '', 'WinRAR', 'UnRAR.exe'),
+          path.join(process.env['PROGRAMFILES(X86)'] || '', 'WinRAR', 'UnRAR.exe')
+        ],
+        getArgs: (filePath, tempPath) => ['x', '-y', filePath, tempPath + '\\']
+      }
+    ];
+
+    for (const tool of tools) {
+      // Check common paths first
+      for (const toolPath of tool.paths) {
+        if (fs.existsSync(toolPath)) {
+          console.log(`Found RAR extraction tool: ${tool.name} at ${toolPath}`);
+          callback(toolPath, tool.name, tool.getArgs);
+          return;
+        }
+      }
+
+      // Try to find in PATH
+      exec(`where ${tool.name}`, (error, stdout) => {
+        if (!error && stdout.trim()) {
+          console.log(`Found RAR extraction tool: ${tool.name} in PATH`);
+          callback(stdout.trim().split('\n')[0], tool.name, tool.getArgs);
+          return;
+        }
+      });
+    }
+
+    // If no tool found, return null
+    setTimeout(() => callback(null), 100);
   }
 
   parseExtractionProgress(extractionStatus, output) {

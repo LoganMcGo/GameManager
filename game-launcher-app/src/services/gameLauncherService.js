@@ -51,13 +51,23 @@ class GameLauncherService {
     ipcMain.handle('launcher:is-game-ready', async (event, gameInfo) => {
       return await this.isGameReady(gameInfo);
     });
+
+    // Check if directory exists
+    ipcMain.handle('launcher:check-directory-exists', async (event, directoryPath) => {
+      return this.checkDirectoryExists(directoryPath);
+    });
+
+    // Uninstall game
+    ipcMain.handle('launcher:uninstall-game', async (event, gameInfo) => {
+      return await this.uninstallGame(gameInfo);
+    });
   }
 
   setupProcessMonitoring() {
-    // Monitor running processes every 5 seconds
+    // Monitor running processes every 2 seconds for better responsiveness
     setInterval(() => {
       this.monitorRunningGames();
-    }, 5000);
+    }, 2000);
   }
 
   async launchGame(gameInfo) {
@@ -119,11 +129,15 @@ class GameLauncherService {
       gameProcess.on('exit', (code, signal) => {
         console.log(`🛑 Game exited: ${gameName} (PID: ${gameProcess.pid})`);
         this.runningGames.delete(gameId);
+        // Notify UI immediately when process exits
+        this.notifyGameClosed(gameId, gameName);
       });
 
       gameProcess.on('error', (error) => {
         console.error(`❌ Game process error: ${gameName}`, error);
         this.runningGames.delete(gameId);
+        // Notify UI about process error
+        this.notifyGameClosed(gameId, gameName);
       });
 
       // Unref to allow the main process to exit
@@ -477,6 +491,191 @@ class GameLauncherService {
         reason: error.message
       };
     }
+  }
+
+  checkDirectoryExists(directoryPath) {
+    try {
+      return fs.existsSync(directoryPath) && fs.statSync(directoryPath).isDirectory();
+    } catch (error) {
+      console.error('Error checking directory exists:', error);
+      return false;
+    }
+  }
+
+  async uninstallGame(gameInfo) {
+    try {
+      const { gameId, gameName, gameDirectory } = gameInfo;
+      
+      console.log(`🗑️ Starting uninstall for: ${gameName}`);
+      console.log(`📁 Game directory: ${gameDirectory}`);
+
+      // Check if directory exists
+      if (!fs.existsSync(gameDirectory)) {
+        return {
+          success: true,
+          message: 'Game directory does not exist, considering uninstalled',
+          method: 'already_removed'
+        };
+      }
+
+      // First, try to find an uninstaller
+      const uninstallerPath = await this.findUninstaller(gameDirectory);
+      
+      if (uninstallerPath) {
+        console.log(`🔧 Found uninstaller: ${uninstallerPath}`);
+        
+        try {
+          // Run the uninstaller
+          await this.runUninstaller(uninstallerPath);
+          
+          // Wait a moment for the uninstaller to complete
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Check if directory still exists (some uninstallers might leave it)
+          if (fs.existsSync(gameDirectory)) {
+            console.log(`📁 Directory still exists after uninstaller, removing manually...`);
+            await this.removeDirectory(gameDirectory);
+          }
+          
+          return {
+            success: true,
+            message: `${gameName} has been uninstalled using the built-in uninstaller`,
+            method: 'uninstaller'
+          };
+          
+        } catch (uninstallerError) {
+          console.warn(`⚠️ Uninstaller failed, falling back to directory removal:`, uninstallerError);
+          // Fall through to manual removal
+        }
+      }
+
+      // If no uninstaller found or uninstaller failed, remove the directory manually
+      console.log(`🗑️ Removing game directory manually: ${gameDirectory}`);
+      await this.removeDirectory(gameDirectory);
+      
+      // Remove from cache if exists
+      if (this.gameExecutables.has(gameId)) {
+        this.gameExecutables.delete(gameId);
+      }
+
+      return {
+        success: true,
+        message: `${gameName} has been uninstalled (folder deleted)`,
+        method: 'folder_deletion'
+      };
+
+    } catch (error) {
+      console.error(`❌ Error uninstalling game:`, error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async findUninstaller(gameDirectory) {
+    try {
+      const uninstallerPatterns = [
+        'unins*.exe',
+        'uninst*.exe', 
+        'uninstall*.exe',
+        'remove*.exe'
+      ];
+
+      const searchDirectory = (dir, depth = 0) => {
+        if (depth > 2) return null; // Limit search depth
+        
+        const items = fs.readdirSync(dir);
+        
+        for (const item of items) {
+          const itemPath = path.join(dir, item);
+          const stat = fs.statSync(itemPath);
+          
+          if (stat.isFile()) {
+            const fileName = item.toLowerCase();
+            
+            // Check if filename matches uninstaller patterns
+            for (const pattern of uninstallerPatterns) {
+              const regex = new RegExp(pattern.replace('*', '.*'));
+              if (regex.test(fileName)) {
+                return itemPath;
+              }
+            }
+          } else if (stat.isDirectory() && depth < 2) {
+            // Check subdirectories but limit depth
+            const result = searchDirectory(itemPath, depth + 1);
+            if (result) return result;
+          }
+        }
+        
+        return null;
+      };
+
+      return searchDirectory(gameDirectory);
+      
+    } catch (error) {
+      console.error('Error finding uninstaller:', error);
+      return null;
+    }
+  }
+
+  async runUninstaller(uninstallerPath) {
+    return new Promise((resolve, reject) => {
+      console.log(`🔧 Running uninstaller: ${uninstallerPath}`);
+      
+      // Run uninstaller with silent flags (most common ones)
+      const uninstallerProcess = spawn(uninstallerPath, ['/S', '/SILENT', '/VERYSILENT'], {
+        cwd: path.dirname(uninstallerPath),
+        detached: false,
+        stdio: ['ignore', 'ignore', 'ignore']
+      });
+
+      // Set a timeout for the uninstaller
+      const timeout = setTimeout(() => {
+        uninstallerProcess.kill();
+        reject(new Error('Uninstaller timed out'));
+      }, 30000); // 30 second timeout
+
+      uninstallerProcess.on('exit', (code, signal) => {
+        clearTimeout(timeout);
+        console.log(`🔧 Uninstaller exited with code: ${code}`);
+        resolve();
+      });
+
+      uninstallerProcess.on('error', (error) => {
+        clearTimeout(timeout);
+        console.error(`❌ Uninstaller error:`, error);
+        reject(error);
+      });
+    });
+  }
+
+  async removeDirectory(directoryPath) {
+    return new Promise((resolve, reject) => {
+      if (process.platform === 'win32') {
+        // Use rmdir /s on Windows for better compatibility
+        exec(`rmdir /s /q "${directoryPath}"`, (error, stdout, stderr) => {
+          if (error) {
+            console.error(`❌ Error removing directory:`, error);
+            reject(error);
+          } else {
+            console.log(`✅ Directory removed: ${directoryPath}`);
+            resolve();
+          }
+        });
+      } else {
+        // Use rm -rf on Unix-like systems
+        exec(`rm -rf "${directoryPath}"`, (error, stdout, stderr) => {
+          if (error) {
+            console.error(`❌ Error removing directory:`, error);
+            reject(error);
+          } else {
+            console.log(`✅ Directory removed: ${directoryPath}`);
+            resolve();
+          }
+        });
+      }
+    });
   }
 
   monitorRunningGames() {

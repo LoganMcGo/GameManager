@@ -9,6 +9,7 @@ import GameDetailView from '../components/GameDetailView';
 import SkeletonCard from '../components/SkeletonCard';
 import SearchBar from '../components/SearchBar';
 
+
 const categoryNames = {
   action: 'Action',
   rpg: 'RPG',

@@ -61,14 +61,12 @@ class GameFinderService {
       const settings = localStorage.getItem('torrentProviderSettings');
       return settings ? JSON.parse(settings) : {
         ThePirateBay: { enabled: true, name: 'The Pirate Bay', description: 'Large torrent database' },
-        Nyaa: { enabled: true, name: 'Nyaa.si', description: 'Good for Japanese games' },
-        '1337x': { enabled: true, name: '1337x', description: 'Popular torrent site with game repacks' }
+        Nyaa: { enabled: true, name: 'Nyaa.si', description: 'Good for Japanese games' }
       };
     } catch {
       return {
         ThePirateBay: { enabled: true, name: 'The Pirate Bay', description: 'Large torrent database' },
-        Nyaa: { enabled: true, name: 'Nyaa.si', description: 'Good for Japanese games' },
-        '1337x': { enabled: true, name: '1337x', description: 'Popular torrent site with game repacks' }
+        Nyaa: { enabled: true, name: 'Nyaa.si', description: 'Good for Japanese games' }
       };
     }
   }
@@ -153,8 +151,7 @@ class GameFinderService {
     try {
       const allSearches = [
         { name: 'ThePirateBay', search: this.searchTPB(gameName) },
-        { name: 'Nyaa', search: this.searchNyaa(gameName) },
-        { name: '1337x', search: this.search1337x(gameName) }
+        { name: 'Nyaa', search: this.searchNyaa(gameName) }
       ];
 
       // Filter searches based on provider settings
@@ -339,155 +336,7 @@ class GameFinderService {
     }
   }
 
-  // Search 1337x using RSS feeds and web scraping
-  async search1337x(gameName) {
-    try {
-      console.log(`🔍 1337x: Searching for "${gameName}"`);
-      
-      const results = [];
-      
-      // Try multiple search approaches
-      const searchStrategies = [
-        { query: `${gameName} game`, description: 'Game-specific search' },
-        { query: gameName, description: 'Direct name search' },
-        { query: `${gameName} repack`, description: 'Repack search' },
-        { query: gameName.split(' ')[0], description: 'First word search' }
-      ];
-      
-      for (const strategy of searchStrategies) {
-        try {
-          console.log(`🔍 1337x: Trying strategy - ${strategy.description}`);
-          
-          // Try RSS feed first
-          const rssResults = await this.search1337xRSS(strategy.query);
-          if (rssResults.length > 0) {
-            console.log(`✅ 1337x: Found ${rssResults.length} results via RSS with "${strategy.description}"`);
-            results.push(...rssResults);
-            break; // Stop on first successful strategy
-          }
-          
-          // If RSS fails, try web scraping approach
-          const webResults = await this.search1337xWeb(strategy.query);
-          if (webResults.length > 0) {
-            console.log(`✅ 1337x: Found ${webResults.length} results via web scraping with "${strategy.description}"`);
-            results.push(...webResults);
-            break; // Stop on first successful strategy
-          }
-          
-          // Wait between strategies
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } catch (strategyError) {
-          console.warn(`❌ 1337x: Strategy "${strategy.description}" failed:`, strategyError.message);
-        }
-      }
-      
-      // Remove duplicates and format results
-      const uniqueResults = this.removeDuplicates1337x(results);
-      console.log(`✅ 1337x: Processed ${uniqueResults.length} unique results`);
-      return uniqueResults;
-      
-    } catch (error) {
-      console.error('❌ 1337x error:', error);
-      return [];
-    }
-  }
 
-  // Search 1337x using RSS feeds
-  async search1337xRSS(query) {
-    try {
-      // 1337x RSS feed URL
-      const rssUrl = `https://1337x.to/search/${encodeURIComponent(query)}/1/`;
-      console.log(`🔍 1337x RSS: Trying ${rssUrl}`);
-      
-      // Note: Direct RSS access might be blocked by CORS
-      // This is a fallback that creates realistic test data based on the query
-      const mockResults = [
-        {
-          name: `${query} [FitGirl Repack]`,
-          magnet: `magnet:?xt=urn:btih:${this.generateRandomHash()}&dn=${encodeURIComponent(query)}&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://tracker.coppersurfer.tk:6969/announce`,
-          size: Math.floor(Math.random() * 50 + 5) * 1024 * 1024 * 1024, // 5-55GB
-          seeders: Math.floor(Math.random() * 100 + 10),
-          leechers: Math.floor(Math.random() * 50 + 5),
-          source: '1337x',
-          quality: 0 // Will be calculated later
-        },
-        {
-          name: `${query} [DODI Repack]`,
-          magnet: `magnet:?xt=urn:btih:${this.generateRandomHash()}&dn=${encodeURIComponent(query)}&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://tracker.coppersurfer.tk:6969/announce`,
-          size: Math.floor(Math.random() * 40 + 8) * 1024 * 1024 * 1024, // 8-48GB
-          seeders: Math.floor(Math.random() * 80 + 15),
-          leechers: Math.floor(Math.random() * 30 + 3),
-          source: '1337x',
-          quality: 0 // Will be calculated later
-        }
-      ];
-      
-      return mockResults.map(item => ({
-        ...item,
-        quality: this.calculateQuality(item.name, item.seeders, item.size)
-      }));
-      
-    } catch (error) {
-      console.warn('❌ 1337x RSS failed:', error.message);
-      return [];
-    }
-  }
-
-  // Search 1337x using web scraping approach (fallback)
-  async search1337xWeb(query) {
-    try {
-      console.log(`🔍 1337x Web: Searching for "${query}"`);
-      
-      // Since direct web scraping is complex and may be blocked,
-      // we'll create realistic mock data that represents what 1337x might return
-      const gameKeywords = ['repack', 'fitgirl', 'dodi', 'codex', 'skidrow', 'plaza'];
-      const randomKeyword = gameKeywords[Math.floor(Math.random() * gameKeywords.length)];
-      
-      const mockResults = [
-        {
-          name: `${query} [${randomKeyword.toUpperCase()}]`,
-          magnet: `magnet:?xt=urn:btih:${this.generateRandomHash()}&dn=${encodeURIComponent(query)}&tr=udp://tracker.opentrackr.org:1337/announce`,
-          size: Math.floor(Math.random() * 60 + 10) * 1024 * 1024 * 1024, // 10-70GB
-          seeders: Math.floor(Math.random() * 150 + 20),
-          leechers: Math.floor(Math.random() * 40 + 5),
-          source: '1337x',
-          quality: 0 // Will be calculated later
-        }
-      ];
-      
-      return mockResults.map(item => ({
-        ...item,
-        quality: this.calculateQuality(item.name, item.seeders, item.size)
-      }));
-      
-    } catch (error) {
-      console.warn('❌ 1337x Web scraping failed:', error.message);
-      return [];
-    }
-  }
-
-  // Generate a random hash for magnet links
-  generateRandomHash() {
-    const chars = '0123456789abcdef';
-    let hash = '';
-    for (let i = 0; i < 40; i++) {
-      hash += chars[Math.floor(Math.random() * chars.length)];
-    }
-    return hash;
-  }
-
-  // Remove duplicates from 1337x results
-  removeDuplicates1337x(results) {
-    const seen = new Set();
-    return results.filter(item => {
-      const key = `${item.name}-${item.size}`;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-  }
 
   // Simple RSS parser for torrent feeds
   parseRSSFeed(rssText) {

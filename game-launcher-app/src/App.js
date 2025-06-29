@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import MainContent from './components/MainContent';
-import SearchBar from './components/SearchBar';
 import WelcomeScreen from './pages/WelcomeScreen';
 import SettingsPage from './pages/SettingsPage';
 import CategoryPage from './pages/CategoryPage';

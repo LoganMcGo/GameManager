@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld(
       clearCompleted: () => ipcRenderer.invoke('download-tracker:clear-completed'),
       startTracking: (trackingData) => ipcRenderer.invoke('download-tracker:start-tracking', trackingData),
       updateStatus: (downloadId, status, data) => ipcRenderer.invoke('download-tracker:update-status', downloadId, status, data),
+      getStatistics: () => ipcRenderer.invoke('download-tracker:get-statistics'),
+      updateConfig: (config) => ipcRenderer.invoke('download-tracker:update-config', config),
       onDownloadUpdate: (callback) => {
         const wrappedCallback = (event, ...args) => callback(...args);
         ipcRenderer.on('download-tracker:update', wrappedCallback);
@@ -123,6 +125,8 @@ contextBridge.exposeInMainWorld(
       scanDirectory: (directoryPath) => ipcRenderer.invoke('launcher:scan-directory', directoryPath),
       setExecutablePath: (gameId, executablePath) => ipcRenderer.invoke('launcher:set-executable-path', gameId, executablePath),
       isGameReady: (gameInfo) => ipcRenderer.invoke('launcher:is-game-ready', gameInfo),
+      checkDirectoryExists: (directoryPath) => ipcRenderer.invoke('launcher:check-directory-exists', directoryPath),
+      uninstallGame: (gameInfo) => ipcRenderer.invoke('launcher:uninstall-game', gameInfo),
       onGameClosed: (callback) => {
         const wrappedCallback = (event, ...args) => callback(...args);
         ipcRenderer.on('launcher:game-closed', wrappedCallback);

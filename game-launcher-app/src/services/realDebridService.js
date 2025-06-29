@@ -45,8 +45,11 @@ async function getAuthStatus() {
   return { authenticated: true };
 }
 
-// Make a proxy request to Real-Debrid API
-async function makeRealDebridRequest(endpoint, method = 'GET', body = null, contentType = null) {
+// Make a proxy request to Real-Debrid API with retry logic
+async function makeRealDebridRequest(endpoint, method = 'GET', body = null, contentType = null, retryCount = 0) {
+  const maxRetries = 3;
+  const baseDelay = 1000;
+  
   try {
       const response = await makeProxyRequest(REAL_DEBRID_PROXY_URL, {
         method: 'POST',
@@ -68,8 +71,31 @@ async function makeRealDebridRequest(endpoint, method = 'GET', body = null, cont
   } catch (error) {
     console.error('Real-Debrid proxy request failed:', error);
     
+    // Check if this is a retryable error
+    const isRetryable = (
+      error.response?.status === 502 ||  // Bad Gateway
+      error.response?.status === 503 ||  // Service Unavailable
+      error.response?.status === 504 ||  // Gateway Timeout
+      error.code === 'ECONNRESET' ||
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ETIMEDOUT'
+    );
+    
+    if (isRetryable && retryCount < maxRetries) {
+      const delay = baseDelay * Math.pow(2, retryCount);
+      console.log(`Retrying Real-Debrid request in ${delay}ms (attempt ${retryCount + 1}/${maxRetries})`);
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return makeRealDebridRequest(endpoint, method, body, contentType, retryCount + 1);
+    }
+    
+    // Handle specific error codes
     if (error.response?.status === 503) {
       return { success: false, error: 'Real-Debrid service not configured. Please contact administrator.' };
+    } else if (error.response?.status === 502) {
+      return { success: false, error: 'Real-Debrid proxy server is temporarily unavailable. Please try again in a few minutes.' };
+    } else if (error.response?.status === 504) {
+      return { success: false, error: 'Real-Debrid request timed out. Please try again.' };
     }
     
       return {

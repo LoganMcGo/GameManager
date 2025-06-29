@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import SearchBar from './SearchBar';
+
 import { useNotifications } from '../context/NotificationContext';
 
 function GameDownloadsManager({ onGameSelect }) {
@@ -12,9 +12,7 @@ function GameDownloadsManager({ onGameSelect }) {
   useEffect(() => {
     loadDownloads();
     
-    // Set up real-time updates with more frequent refresh
-    let refreshInterval;
-    
+    // Set up real-time updates using optimized monitoring
     const unsubscribe = window.api.downloadTracker.onDownloadUpdate((download) => {
       setDownloads(prevDownloads => {
         const updated = prevDownloads.map(d => 
@@ -87,14 +85,8 @@ function GameDownloadsManager({ onGameSelect }) {
       });
     });
     
-    // Also refresh the downloads list every 1 second to catch any missed updates
-    refreshInterval = setInterval(() => {
-      loadDownloads();
-    }, 1000);
-    
     return () => {
       if (unsubscribe) unsubscribe();
-      if (refreshInterval) clearInterval(refreshInterval);
     };
   }, []);
 
@@ -225,19 +217,11 @@ function GameDownloadsManager({ onGameSelect }) {
 
   return (
     <div className="flex-1 overflow-y-auto bg-gray-900 text-white main-container">
-      <SearchBar onGameSelect={onGameSelect} />
-      
       <div className="max-w-6xl mx-auto p-6">
         <div className="flex justify-between items-center mb-6">
-          <div>
+                      <div>
             <h2 className="text-2xl font-bold">Game Downloads</h2>
-            <div className="flex items-center space-x-2">
-              <p className="text-gray-400 text-sm">Track your game downloads from start to finish</p>
-              <div className="flex items-center space-x-1 text-green-400">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                <span className="text-xs">Live Updates</span>
-              </div>
-            </div>
+            <p className="text-gray-400 text-sm">Track your game downloads from start to finish</p>
           </div>
           <div className="flex gap-3">
             <button
@@ -248,25 +232,6 @@ function GameDownloadsManager({ onGameSelect }) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
               </svg>
               Clear Completed
-            </button>
-            <button
-              onClick={loadDownloads}
-              disabled={loading}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors duration-300 disabled:opacity-50 flex items-center"
-            >
-              {loading ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
-                  Loading...
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                  </svg>
-                  Refresh
-                </>
-              )}
             </button>
           </div>
         </div>
@@ -343,7 +308,7 @@ function GameDownloadsManager({ onGameSelect }) {
                         <div className="flex justify-between items-center mb-1">
                           <span className="text-xs text-gray-400">
                             {download.status === 'extracting' 
-                              ? `Extracting... ${(download.extractionProgress || 0).toFixed(1)}%`
+                              ? 'Extracting...'
                               : download.status === 'download_complete'
                               ? 'Download Complete - Starting Extraction...'
                               : download.status === 'extraction_complete'
@@ -369,7 +334,7 @@ function GameDownloadsManager({ onGameSelect }) {
                             style={{ 
                               width: `${Math.min(100, Math.max(0, 
                                 download.status === 'extracting' 
-                                  ? download.extractionProgress || 0
+                                  ? 100
                                   : download.status === 'download_complete' || download.status === 'extraction_complete'
                                   ? 100
                                   : download.progress

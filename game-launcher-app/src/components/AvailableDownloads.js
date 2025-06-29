@@ -11,6 +11,7 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary, onNav
   const [searchPerformed, setSearchPerformed] = useState(false);
   const [downloadingItems, setDownloadingItems] = useState(new Set());
   const [realDebridError, setRealDebridError] = useState(null);
+  const [trackedDownloads, setTrackedDownloads] = useState([]);
 
   // Search for downloads when component mounts or game changes
   useEffect(() => {
@@ -18,6 +19,48 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary, onNav
       searchForDownloads();
     }
   }, [gameName, searchPerformed]);
+
+  // Set up real-time download tracking
+  useEffect(() => {
+    // Load initial tracked downloads
+    const loadTrackedDownloads = async () => {
+      try {
+        const downloads = await window.api.downloadTracker.getDownloads();
+        // Filter downloads for this specific game
+        const gameDownloads = downloads.filter(download => 
+          download.gameName === gameName || download.gameId === gameId
+        );
+        setTrackedDownloads(gameDownloads);
+      } catch (err) {
+        console.error('Error loading tracked downloads:', err);
+      }
+    };
+    
+    loadTrackedDownloads();
+    
+    // Set up real-time updates
+    const unsubscribe = window.api.downloadTracker.onDownloadUpdate((download) => {
+      // Only update if this download is for the current game
+      if (download.gameName === gameName || download.gameId === gameId) {
+        setTrackedDownloads(prevDownloads => {
+          const updated = prevDownloads.map(d => 
+            d.id === download.id ? download : d
+          );
+          
+          // If this is a new download, add it
+          if (!updated.find(d => d.id === download.id)) {
+            updated.push(download);
+          }
+          
+          return updated;
+        });
+      }
+    });
+    
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [gameName, gameId]);
 
   // Search for game downloads using DHT crawler
   const searchForDownloads = async () => {
@@ -149,6 +192,27 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary, onNav
     setDownloads([]);
     setError(null);
     setRealDebridError(null);
+  };
+
+  // Format file size
+  const formatFileSize = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = bytes;
+    let unitIndex = 0;
+    
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+    
+    return `${size.toFixed(1)} ${units[unitIndex]}`;
+  };
+
+  // Format download speed
+  const formatSpeed = (bytesPerSecond) => {
+    if (!bytesPerSecond || bytesPerSecond === 0) return '0 B/s';
+    return `${formatFileSize(bytesPerSecond)}/s`;
   };
 
   if (!gameName) {
@@ -318,6 +382,115 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary, onNav
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Active Downloads Section */}
+      {trackedDownloads.length > 0 && (
+        <div className="mt-6 pt-6 border-t border-gray-600">
+          <h4 className="text-lg font-semibold mb-4">Active Downloads</h4>
+          <div className="space-y-3">
+            {trackedDownloads.map((download) => (
+              <div key={download.id} className="bg-gray-700 rounded-lg p-4">
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex-1 min-w-0">
+                    <h5 className="font-medium text-white mb-1 truncate">{download.gameName}</h5>
+                    <div className="flex items-center mb-2">
+                      <span className={`text-sm font-medium ${
+                        download.status === 'complete' ? 'text-green-400' :
+                        download.status === 'error' ? 'text-red-400' :
+                        download.status === 'downloading' ? 'text-blue-400' :
+                        download.status === 'extracting' ? 'text-purple-400' :
+                        'text-yellow-400'
+                      }`}>
+                        {download.statusMessage}
+                      </span>
+                      {/* Loading dots for transitional states */}
+                      {(['adding_to_debrid', 'starting_torrent', 'torrent_downloading', 'starting_download', 'file_ready', 'extracting', 'finding_executable'].includes(download.status)) && (
+                        <div className="inline-flex space-x-1 ml-2">
+                          <div className="w-1 h-1 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '0s' }}></div>
+                          <div className="w-1 h-1 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                          <div className="w-1 h-1 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Progress Bar */}
+                    {(download.status === 'downloading' || 
+                      download.status === 'torrent_downloading' ||
+                      download.status === 'extracting' ||
+                      download.status === 'download_complete' ||
+                      download.status === 'extraction_complete') && (
+                      <div className="mb-3">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs text-gray-400">
+                            {download.status === 'extracting' 
+                              ? 'Extracting...'
+                              : download.status === 'download_complete'
+                              ? 'Download Complete - Starting Extraction...'
+                              : download.status === 'extraction_complete'
+                              ? 'Extraction Complete - Setting up game...'
+                              : `${download.progress?.toFixed(1) || 0}%`
+                            }
+                          </span>
+                          <div className="text-xs text-gray-400 space-x-2">
+                            {download.downloadedBytes > 0 && download.status === 'downloading' && (
+                              <span>{formatFileSize(download.downloadedBytes)}</span>
+                            )}
+                            {download.totalBytes > 0 && download.status === 'downloading' && (
+                              <span>/ {formatFileSize(download.totalBytes)}</span>
+                            )}
+                            {download.downloadSpeed > 0 && download.status === 'downloading' && (
+                              <span>• {formatSpeed(download.downloadSpeed)}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="w-full bg-gray-600 rounded-full h-2">
+                          <div
+                            className={`h-2 rounded-full transition-all duration-300 ${
+                              download.status === 'complete' ? 'bg-green-500' :
+                              download.status === 'error' ? 'bg-red-500' :
+                              download.status === 'downloading' ? 'bg-blue-500' :
+                              download.status === 'download_complete' ? 'bg-blue-400' :
+                              download.status === 'extracting' ? 'bg-purple-500' :
+                              download.status === 'extraction_complete' ? 'bg-purple-400' :
+                              download.status === 'finding_executable' ? 'bg-yellow-500' :
+                              download.status === 'torrent_downloading' ? 'bg-cyan-500' :
+                              'bg-yellow-500'
+                            }`}
+                            style={{ 
+                              width: `${Math.min(100, Math.max(0, 
+                                download.status === 'extracting' 
+                                  ? 100
+                                  : download.status === 'download_complete' || download.status === 'extraction_complete'
+                                  ? 100
+                                  : download.progress || 0
+                              ))}%` 
+                            }}
+                          ></div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Error Message */}
+                    {download.status === 'error' && download.error && (
+                      <div className="mt-2 p-2 bg-red-900 border border-red-700 rounded text-red-300 text-sm">
+                        {download.error}
+                      </div>
+                    )}
+
+                    {/* Download Info */}
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      <span>Started {new Date(download.startTime).toLocaleString()}</span>
+                                           {download.status === 'complete' && (
+                       <span className="text-green-400 font-medium">✓ Game is ready</span>
+                     )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

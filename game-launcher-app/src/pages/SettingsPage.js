@@ -585,7 +585,7 @@ function SettingsPage({ onGameSelect }) {
             <ul className="text-sm text-gray-400 space-y-1">
               <li><strong>The Pirate Bay:</strong> Large torrent database with good game selection</li>
               <li><strong>Nyaa.si:</strong> Good for Japanese games and visual novels</li>
-              <li><strong>1337x:</strong> Popular torrent site with game repacks</li>
+              
             </ul>
           </div>
         </div>
