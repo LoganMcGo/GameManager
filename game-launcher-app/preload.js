@@ -127,6 +127,9 @@ contextBridge.exposeInMainWorld(
       isGameReady: (gameInfo) => ipcRenderer.invoke('launcher:is-game-ready', gameInfo),
       checkDirectoryExists: (directoryPath) => ipcRenderer.invoke('launcher:check-directory-exists', directoryPath),
       uninstallGame: (gameInfo) => ipcRenderer.invoke('launcher:uninstall-game', gameInfo),
+      runRepackInstaller: (installerInfo) => ipcRenderer.invoke('launcher:run-repack-installer', installerInfo),
+      checkRepackInstallation: (gameInfo) => ipcRenderer.invoke('launcher:check-repack-installation', gameInfo),
+      addInstalledGame: (gameInfo) => ipcRenderer.invoke('launcher:add-installed-game', gameInfo),
       onGameClosed: (callback) => {
         const wrappedCallback = (event, ...args) => callback(...args);
         ipcRenderer.on('launcher:game-closed', wrappedCallback);

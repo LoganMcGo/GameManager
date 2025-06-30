@@ -23,6 +23,12 @@ function Library({ onGameSelect }) {
   const [gameToUninstall, setGameToUninstall] = useState(null);
   const [isUninstalling, setIsUninstalling] = useState(false);
 
+  // Repack installation modal state
+  const [showRepackModal, setShowRepackModal] = useState(false);
+  const [repackGameInfo, setRepackGameInfo] = useState(null);
+  const [repackInfo, setRepackInfo] = useState(null);
+  const [isInstallingRepack, setIsInstallingRepack] = useState(false);
+
   // Check for installed games and Real-Debrid downloads
   useEffect(() => {
     checkInstalledGames();
@@ -201,7 +207,7 @@ function Library({ onGameSelect }) {
           const trackedStatus = gameStatuses.get(game.appId);
           
           // Skip games that are actively downloading/extracting to avoid conflicts
-          if (trackedStatus && ['downloading', 'extracting', 'download_complete', 'extraction_complete', 'finding_executable'].includes(trackedStatus.status)) {
+          if (trackedStatus && ['downloading', 'extracting', 'download_complete', 'extraction_complete', 'needs_setup', 'finding_executable'].includes(trackedStatus.status)) {
             continue;
           }
           
@@ -492,12 +498,15 @@ function Library({ onGameSelect }) {
         break;
         
       case 'needs_setup':
-        // Setup game with manual executable selection
+        // Setup game with manual executable selection (including repack installation)
         try {
+          // For repacks, use the temp extraction path instead of download directory
           const gameInfo = {
             gameId: game.appId,
             gameName: game.name,
-            gameDirectory: trackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
+            gameDirectory: trackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`,
+            isRepack: trackedStatus?.isRepack || false,
+            tempDirectory: trackedStatus?.extractedPath || null
           };
           await handleExecutableSelection(game, gameInfo);
         } catch (error) {
@@ -546,6 +555,12 @@ function Library({ onGameSelect }) {
     try {
       // First try to scan for executables automatically
       const scanResult = await window.api.launcher.findExecutable(gameInfo);
+      
+      // Check if this is a repack that needs installation
+      if (scanResult.isRepack && scanResult.needsInstallation) {
+        await handleRepackInstallation(game, gameInfo, scanResult.repackInfo);
+        return;
+      }
       
       if (scanResult.needsUserSelection && scanResult.availableExecutables) {
         // Show a selection dialog with available executables
@@ -641,6 +656,13 @@ function Library({ onGameSelect }) {
             action: 'View Progress',
             progress: 100
           };
+        case 'needs_setup':
+          return { 
+            status: 'needs_setup', 
+            text: '📦 Needs Setup', 
+            color: 'text-purple-400', 
+            action: 'Setup'
+          };
         case 'finding_executable':
           return { 
             status: 'finding_executable', 
@@ -662,7 +684,14 @@ function Library({ onGameSelect }) {
             return { 
               status: 'needs_setup', 
               text: '⚙️ Needs Setup', 
-              color: 'text-yellow-400', 
+              color: 'text-purple-400', 
+              action: 'Setup'
+            };
+          } else if (gameStatus.isRepack && gameStatus.needsInstallation) {
+            return { 
+              status: 'needs_setup', 
+              text: '⚙️ Needs Setup', 
+              color: 'text-purple-400', 
               action: 'Setup'
             };
           } else {
@@ -810,6 +839,98 @@ function Library({ onGameSelect }) {
     }
   };
 
+  // Handle repack installation
+  const handleRepackInstallation = async (game, gameInfo, repackInfo) => {
+    // Get download location for display in modal
+    const downloadLocation = await window.api.download.getDownloadLocation();
+    
+    setRepackGameInfo({ game, gameInfo });
+    setRepackInfo({ ...repackInfo, downloadLocation });
+    setShowRepackModal(true);
+  };
+
+  // Handle running the repack installer
+  const handleRunInstaller = async () => {
+    if (!repackGameInfo || !repackInfo) return;
+    
+    setIsInstallingRepack(true);
+    try {
+      // Get download location for instructions
+      const downloadLocation = await window.api.download.getDownloadLocation();
+      
+      const result = await window.api.launcher.runRepackInstaller({
+        installerPath: repackInfo.installer,
+        gameId: repackGameInfo.game.appId,
+        gameName: repackGameInfo.game.name,
+        repackType: repackInfo.repackType,
+        downloadLocation: downloadLocation
+      });
+      
+      if (result.success) {
+        console.log('Installer launched successfully');
+        setShowRepackModal(false);
+        
+        // Start polling for installation completion - check download location specifically
+        startInstallationPolling(repackGameInfo.game, downloadLocation);
+      } else {
+        console.error('Failed to launch installer:', result.error);
+      }
+    } catch (error) {
+      console.error('Error running installer:', error);
+    } finally {
+      setIsInstallingRepack(false);
+    }
+  };
+
+  // Poll for installation completion
+  const startInstallationPolling = (game, downloadLocation) => {
+    console.log(`Starting installation polling for ${game.name} in ${downloadLocation}`);
+    
+    const pollInterval = setInterval(async () => {
+      try {
+        // Check specifically in the download location
+        const gameDirectory = `${downloadLocation}/${game.name.replace(/[<>:"/\\|?*]/g, '_')}`;
+        
+        const checkResult = await window.api.launcher.findExecutable({
+          gameId: game.appId,
+          gameName: game.name,
+          gameDirectory: gameDirectory
+        });
+        
+        if (checkResult.success && checkResult.executablePath) {
+          console.log(`Installation detected for ${game.name}!`);
+          clearInterval(pollInterval);
+          
+          // Update the game status
+          setGameStatuses(prev => {
+            const newMap = new Map(prev);
+            newMap.set(game.appId, {
+              status: 'complete',
+              gameDirectory: gameDirectory,
+              executablePath: checkResult.executablePath,
+              needsManualSetup: false
+            });
+            return newMap;
+          });
+          
+          // Add to installed games
+          setInstalledGames(prev => new Set(prev).add(game.appId));
+          
+          // Show success notification
+          console.log(`${game.name} has been successfully installed and is ready to play!`);
+        }
+      } catch (error) {
+        console.error('Error polling for installation:', error);
+      }
+    }, 10000); // Check every 10 seconds
+    
+    // Stop polling after 30 minutes
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      console.log(`Stopped polling for ${game.name} installation after 30 minutes`);
+    }, 30 * 60 * 1000);
+  };
+
   if (selectedGame) {
     const gameData = selectedGameDetails || selectedGame;
     const gameStatus = getGameStatus(gameData);
@@ -838,15 +959,17 @@ function Library({ onGameSelect }) {
             <button
               onClick={() => handleGameAction(gameData)}
               className={`px-6 py-2 rounded-lg font-semibold transition-colors flex items-center ${
-                gameStatus.status === 'running'
-                  ? 'bg-red-600 hover:bg-red-700 text-white'
-                  : gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play'
-                  ? 'bg-green-600 hover:bg-green-700 text-white'
-                  : gameStatus.status === 'downloading' || gameStatus.status === 'extracting'
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                  : gameStatus.status === 'downloaded'
-                  ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
-                  : 'bg-gray-600 hover:bg-gray-700 text-white'
+                                        gameStatus.status === 'running'
+                        ? 'bg-red-600 hover:bg-red-700 text-white'
+                        : gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play'
+                        ? 'bg-green-600 hover:bg-green-700 text-white'
+                        : gameStatus.status === 'downloading' || gameStatus.status === 'extracting'
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : gameStatus.status === 'downloaded'
+                        ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
+                        : gameStatus.status === 'needs_setup'
+                        ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                        : 'bg-gray-600 hover:bg-gray-700 text-white'
               }`}
             >
               <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -940,8 +1063,12 @@ function Library({ onGameSelect }) {
                   </p>
                 </div>
 
-                {/* Available Downloads - Only show if not installed and not downloading */}
-                {gameStatus.status !== 'installed' && gameStatus.status !== 'ready_to_play' && gameStatus.status !== 'downloading' && gameStatus.status !== 'running' && (
+                {/* Available Downloads - Only show if not installed, not downloading, and doesn't need setup */}
+                {gameStatus.status !== 'installed' && 
+                 gameStatus.status !== 'ready_to_play' && 
+                 gameStatus.status !== 'downloading' && 
+                 gameStatus.status !== 'running' && 
+                 gameStatus.status !== 'needs_setup' && (
                   <AvailableDownloads 
                     gameName={gameData.name} 
                     gameId={gameData.appId} 
@@ -1096,6 +1223,112 @@ function Library({ onGameSelect }) {
             </div>
           </div>
         )}
+
+        {/* Repack Installation Modal */}
+        {showRepackModal && repackInfo && repackGameInfo && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-gray-800 rounded-lg p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center mb-4">
+                <div className="flex-shrink-0 w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center mr-3">
+                  <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path>
+                  </svg>
+                </div>
+                <h3 className="text-lg font-medium text-white">Install {repackInfo.repackType}</h3>
+              </div>
+              
+              <div className="mb-6">
+                <p className="text-gray-300 mb-4">
+                  <strong>{repackGameInfo.game.name}</strong> is a {repackInfo.repackType} that needs to be installed before you can play it.
+                </p>
+                
+                <div className="bg-gray-900 rounded-lg p-4 mb-4">
+                  <h4 className="text-white font-medium mb-2">📋 Installation Instructions:</h4>
+                  <ul className="text-gray-300 text-sm space-y-2">
+                    <li className="flex items-start">
+                      <span className="text-blue-400 mr-2 mt-0.5">▸</span>
+                      <span>When prompted for installation location, choose this directory:</span>
+                    </li>
+                    <li className="ml-6 bg-gray-800 rounded p-2 font-mono text-xs text-green-400 flex items-center justify-between">
+                      <span>{repackInfo.downloadLocation}</span>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(repackInfo.downloadLocation)}
+                        className="ml-2 px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-white text-xs"
+                        title="Copy to clipboard"
+                      >
+                        Copy
+                      </button>
+                    </li>
+                    <li className="flex items-start">
+                      <span className="text-blue-400 mr-2 mt-0.5">▸</span>
+                      <span>Installing to this location is required for the launcher to detect the game automatically</span>
+                    </li>
+                    {repackInfo.installInstructions.map((instruction, index) => (
+                      <li key={index} className="flex items-start">
+                        <span className="text-blue-400 mr-2 mt-0.5">▸</span>
+                        <span>{instruction}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="bg-yellow-900 border border-yellow-600 rounded-lg p-4 mb-4">
+                  <div className="flex items-start">
+                    <svg className="w-5 h-5 text-yellow-400 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"></path>
+                    </svg>
+                    <div>
+                      <p className="text-yellow-300 font-medium text-sm">Important Notes:</p>
+                      <ul className="text-yellow-200 text-sm mt-1 space-y-1">
+                        <li>• Installation may take 15 minutes to 2+ hours</li>
+                        <li>• Keep the launcher open during installation</li>
+                        <li>• The game will be automatically added to your library once installed</li>
+                        <li>• Make sure you have sufficient disk space</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-gray-400 text-sm">
+                  After clicking "Run Installer", the setup program will open. Follow the installation wizard to complete the process.
+                </p>
+              </div>
+              
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => {
+                    setShowRepackModal(false);
+                    setRepackGameInfo(null);
+                    setRepackInfo(null);
+                  }}
+                  disabled={isInstallingRepack}
+                  className="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleRunInstaller}
+                  disabled={isInstallingRepack}
+                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center"
+                >
+                  {isInstallingRepack ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white mr-2"></div>
+                      Starting...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h10a2 2 0 012 2v14a2 2 0 01-2 2z"></path>
+                      </svg>
+                      Run Installer
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1237,11 +1470,13 @@ function Library({ onGameSelect }) {
                         gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' ? 'bg-green-600 text-white' :
                         gameStatus.status === 'downloading' ? 'bg-blue-600 text-white' :
                         gameStatus.status === 'downloaded' ? 'bg-yellow-600 text-white' :
+                        gameStatus.status === 'needs_setup' ? 'bg-purple-600 text-white' :
                         'bg-gray-600 text-gray-300'
                       }`}>
                         {gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play' ? 'Installed' :
                          gameStatus.status === 'downloading' ? 'Downloading' :
                          gameStatus.status === 'downloaded' ? 'Downloaded' :
+                         gameStatus.status === 'needs_setup' ? 'Needs Setup' :
                          'Not Downloaded'}
                       </span>
                       {gameIsFavorited && (
@@ -1327,15 +1562,17 @@ function Library({ onGameSelect }) {
                         handleGameAction(game);
                       }}
                       className={`px-4 py-2 rounded transition-colors text-sm font-medium ${
-                        gameStatus.status === 'running'
-                          ? 'bg-red-600 hover:bg-red-700 text-white'
-                          : gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play'
-                          ? 'bg-green-600 hover:bg-green-700 text-white'
-                          : gameStatus.status === 'downloading' || gameStatus.status === 'extracting'
-                          ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                          : gameStatus.status === 'downloaded'
-                          ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
-                          : 'bg-gray-600 hover:bg-gray-700 text-white'
+                                              gameStatus.status === 'running'
+                        ? 'bg-red-600 hover:bg-red-700 text-white'
+                        : gameStatus.status === 'installed' || gameStatus.status === 'ready_to_play'
+                        ? 'bg-green-600 hover:bg-green-700 text-white'
+                        : gameStatus.status === 'downloading' || gameStatus.status === 'extracting'
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : gameStatus.status === 'downloaded'
+                        ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
+                        : gameStatus.status === 'needs_setup'
+                        ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                        : 'bg-gray-600 hover:bg-gray-700 text-white'
                       }`}
                     >
                       {gameStatus.status === 'running' ? 'Stop' : 

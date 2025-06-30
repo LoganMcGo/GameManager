@@ -61,6 +61,19 @@ class GameLauncherService {
     ipcMain.handle('launcher:uninstall-game', async (event, gameInfo) => {
       return await this.uninstallGame(gameInfo);
     });
+
+    // Repack handling
+    ipcMain.handle('launcher:run-repack-installer', async (event, installerInfo) => {
+      return await this.runRepackInstaller(installerInfo);
+    });
+
+    ipcMain.handle('launcher:check-repack-installation', async (event, gameInfo) => {
+      return await this.checkRepackInstallation(gameInfo);
+    });
+
+    ipcMain.handle('launcher:add-installed-game', async (event, gameInfo) => {
+      return await this.addInstalledGame(gameInfo);
+    });
   }
 
   setupProcessMonitoring() {
@@ -237,7 +250,7 @@ class GameLauncherService {
 
   async findGameExecutable(gameInfo) {
     try {
-      const { gameId, gameName, gameDirectory } = gameInfo;
+      const { gameId, gameName, gameDirectory, isRepack, tempDirectory } = gameInfo;
 
       // Check cache first
       if (this.gameExecutables.has(gameId)) {
@@ -254,23 +267,39 @@ class GameLauncherService {
         }
       }
 
-      if (!fs.existsSync(gameDirectory)) {
+      // For repacks, check temp directory first
+      const searchDirectory = isRepack && tempDirectory ? tempDirectory : gameDirectory;
+
+      if (!fs.existsSync(searchDirectory)) {
         return {
           success: false,
-          error: `Game directory does not exist: ${gameDirectory}`
+          error: `Game directory does not exist: ${searchDirectory}`
         };
       }
 
-      console.log(`🔍 Searching for executable in: ${gameDirectory}`);
+      console.log(`🔍 Searching for executable in: ${searchDirectory}${isRepack ? ' (temp - repack)' : ''}`);
 
       // Get all executable files in the directory
-      const executables = await this.scanDirectoryForExecutables(gameDirectory);
+      const executables = await this.scanDirectoryForExecutables(searchDirectory);
 
       if (executables.length === 0) {
         return {
           success: false,
           error: 'No executable files found in game directory',
-          scannedDirectory: gameDirectory
+          scannedDirectory: searchDirectory
+        };
+      }
+
+      // Check if this appears to be a repack that needs installation
+      const repackInfo = this.detectRepack(executables, searchDirectory);
+      if (repackInfo.isRepack) {
+        return {
+          success: false,
+          error: 'This appears to be a repack that needs installation',
+          isRepack: true,
+          repackInfo: repackInfo,
+          needsInstallation: true,
+          scannedDirectory: searchDirectory
         };
       }
 
@@ -305,6 +334,116 @@ class GameLauncherService {
         error: error.message
       };
     }
+  }
+
+  // Detect if this is a repack that needs installation
+  detectRepack(executables, gameDirectory) {
+    const setupExecutables = [];
+    const gameExecutables = [];
+    
+    for (const exe of executables) {
+      const fileName = path.basename(exe).toLowerCase();
+      
+      // Check for setup/installer executables
+      if (fileName.includes('setup') || 
+          fileName.includes('install') || 
+          fileName === 'setup.exe' ||
+          fileName === 'installer.exe') {
+        setupExecutables.push(exe);
+      } else {
+        // Check if this looks like a game executable (not system/utility files)
+        const badPatterns = [
+          'unins', 'updater', 'patcher', 'config', 'settings', 'options', 
+          'editor', 'tool', 'utility', 'crack', 'patch', 'keygen', 'trainer',
+          'redist', 'vcredist', 'directx', 'dotnet'
+        ];
+        
+        const isUtility = badPatterns.some(pattern => fileName.includes(pattern));
+        if (!isUtility) {
+          gameExecutables.push(exe);
+        }
+      }
+    }
+    
+    // It's likely a repack if:
+    // 1. There are setup executables AND
+    // 2. Very few or no obvious game executables (excluding utilities)
+    const isRepack = setupExecutables.length > 0 && gameExecutables.length <= 1;
+    
+    if (isRepack) {
+      // Try to identify the repack type and installer
+      const repackType = this.identifyRepackType(gameDirectory, setupExecutables);
+      
+      return {
+        isRepack: true,
+        repackType: repackType.type,
+        setupExecutables: setupExecutables,
+        gameExecutables: gameExecutables,
+        installer: repackType.installer,
+        installInstructions: repackType.instructions
+      };
+    }
+    
+    return { isRepack: false };
+  }
+
+  // Identify the type of repack and provide appropriate instructions
+  identifyRepackType(gameDirectory, setupExecutables) {
+    const dirName = path.basename(gameDirectory).toLowerCase();
+    const setupFiles = setupExecutables.map(exe => path.basename(exe).toLowerCase());
+    
+    // Check for common repack indicators
+    if (dirName.includes('fitgirl') || setupFiles.some(f => f.includes('fitgirl'))) {
+      return {
+        type: 'FitGirl Repack',
+        installer: setupExecutables[0],
+        instructions: [
+          'This is a FitGirl Repack that needs to be installed before playing.',
+          'The installation may take 30 minutes to 2+ hours depending on your system.',
+          'Make sure you have enough free disk space (usually 2-3x the download size).',
+          'Close other applications to free up RAM during installation.',
+          'The installer will show where the game will be installed.'
+        ]
+      };
+    }
+    
+    if (dirName.includes('dodi') || setupFiles.some(f => f.includes('dodi'))) {
+      return {
+        type: 'DODI Repack',
+        installer: setupExecutables[0],
+        instructions: [
+          'This is a DODI Repack that needs to be installed before playing.',
+          'Installation typically takes 15-60 minutes.',
+          'Choose your preferred installation directory when prompted.',
+          'The installer may offer component selection - choose based on your preferences.'
+        ]
+      };
+    }
+    
+    if (dirName.includes('masquerade') || setupFiles.some(f => f.includes('masquerade'))) {
+      return {
+        type: 'Masquerade Repack',
+        installer: setupExecutables[0],
+        instructions: [
+          'This is a Masquerade Repack that needs to be installed.',
+          'Follow the installation wizard to complete setup.',
+          'Note the installation directory for launching the game later.'
+        ]
+      };
+    }
+    
+    // Generic repack
+    return {
+      type: 'Game Repack',
+      installer: setupExecutables[0],
+      instructions: [
+        'This appears to be a repacked game that needs installation.',
+        'Run the setup executable to install the game.',
+        'Follow the installation wizard instructions.',
+        'Remember the installation directory - you\'ll need it to launch the game.',
+        'After installation, you can add the installed game to your library.'
+      ]
+    };
   }
 
   async scanDirectoryForExecutables(directoryPath) {
@@ -753,6 +892,143 @@ class GameLauncherService {
     
     this.runningGames.clear();
     this.gameExecutables.clear();
+  }
+
+  // Run repack installer with user guidance
+  async runRepackInstaller(installerInfo) {
+    try {
+      const { installerPath, gameId, gameName, repackType } = installerInfo;
+      
+      console.log(`🔨 Running ${repackType} installer for: ${gameName}`);
+      console.log(`📁 Installer path: ${installerPath}`);
+      
+      if (!fs.existsSync(installerPath)) {
+        return {
+          success: false,
+          error: 'Installer executable not found'
+        };
+      }
+      
+      // Use shell execution for better compatibility with Windows paths
+      const { exec } = require('child_process');
+      
+      // Quote the path to handle spaces and special characters
+      const quotedPath = `"${installerPath}"`;
+      const workingDir = path.dirname(installerPath);
+      
+      console.log(`🚀 Executing: ${quotedPath} in directory: ${workingDir}`);
+      
+      // Launch the installer using exec with shell=true for better Windows compatibility
+      const installerProcess = exec(quotedPath, {
+        cwd: workingDir,
+        windowsHide: false // Show the installer window
+      });
+      
+      console.log(`✅ Installer launched for ${gameName} (PID: ${installerProcess.pid})`);
+      
+      return {
+        success: true,
+        message: `${repackType} installer has been launched. Please follow the installation wizard.`,
+        installerPid: installerProcess.pid
+      };
+      
+    } catch (error) {
+      console.error('Error running repack installer:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Check if a repack has been installed (look for installed game directory)
+  async checkRepackInstallation(gameInfo) {
+    try {
+      const { gameId, gameName, possibleInstallPaths } = gameInfo;
+      
+      // Common installation directories to check
+      const commonInstallPaths = possibleInstallPaths || [
+        `C:\\Games\\${gameName}`,
+        `C:\\Program Files\\${gameName}`,
+        `C:\\Program Files (x86)\\${gameName}`,
+        path.join(require('os').homedir(), 'Games', gameName),
+        `D:\\Games\\${gameName}`,
+        `E:\\Games\\${gameName}`
+      ];
+      
+      console.log(`🔍 Checking for installed game: ${gameName}`);
+      
+      for (const installPath of commonInstallPaths) {
+        if (fs.existsSync(installPath)) {
+          console.log(`📁 Found potential installation at: ${installPath}`);
+          
+          // Try to find executable in the installation directory
+          const executables = await this.scanDirectoryForExecutables(installPath);
+          const gameExecutables = executables.filter(exe => {
+            const fileName = path.basename(exe).toLowerCase();
+            return !fileName.includes('unins') && 
+                   !fileName.includes('setup') && 
+                   !fileName.includes('install');
+          });
+          
+          if (gameExecutables.length > 0) {
+            const bestExecutable = this.findBestExecutable(gameExecutables, gameName);
+            
+            return {
+              success: true,
+              installed: true,
+              installPath: installPath,
+              executablePath: bestExecutable,
+              availableExecutables: gameExecutables
+            };
+          }
+        }
+      }
+      
+      return {
+        success: true,
+        installed: false,
+        message: 'Game installation not detected yet'
+      };
+      
+    } catch (error) {
+      console.error('Error checking repack installation:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Add an installed game to the launcher's tracking
+  async addInstalledGame(gameInfo) {
+    try {
+      const { gameId, gameName, installPath, executablePath } = gameInfo;
+      
+      console.log(`➕ Adding installed game to library: ${gameName}`);
+      
+      // Cache the executable path
+      if (executablePath) {
+        this.gameExecutables.set(gameId, executablePath);
+      }
+      
+      // You might want to save this to a persistent store
+      // For now, we'll just cache it in memory
+      
+      return {
+        success: true,
+        message: `${gameName} has been added to your library`,
+        gameDirectory: installPath,
+        executablePath: executablePath
+      };
+      
+    } catch (error) {
+      console.error('Error adding installed game:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 }
 

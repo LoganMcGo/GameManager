@@ -336,8 +336,6 @@ class GameFinderService {
     }
   }
 
-
-
   // Simple RSS parser for torrent feeds
   parseRSSFeed(rssText) {
     const items = [];
@@ -394,16 +392,21 @@ class GameFinderService {
       }
 
       // Convert results to AvailableDownloads format
-      const formattedResults = results.map(torrent => ({
-        title: torrent.name,
-        url: torrent.magnet,
-        description: `Seeders: ${torrent.seeders || 0} | Quality Score: ${torrent.quality || 0} | Source: ${torrent.source}`,
-        size: this.formatSize(torrent.size),
-        source: torrent.source,
-        magnet: torrent.magnet,
-        seeders: torrent.seeders || 0,
-        quality: torrent.quality || 0
-      }));
+      const formattedResults = results.map(torrent => {
+        const isRepack = this.isRepackTorrent(torrent.name);
+        return {
+          title: torrent.name,
+          url: torrent.magnet,
+          description: `${isRepack ? '📦 Repack | ' : ''}Seeders: ${torrent.seeders || 0} | Quality Score: ${torrent.quality || 0} | Source: ${torrent.source}`,
+          size: this.formatSize(torrent.size),
+          source: torrent.source,
+          magnet: torrent.magnet,
+          seeders: torrent.seeders || 0,
+          quality: torrent.quality || 0,
+          isRepack: isRepack,
+          repackType: isRepack ? this.getRepackType(torrent.name) : null
+        };
+      });
 
       console.log(`✅ Found ${formattedResults.length} torrents for "${gameName}"`);
       
@@ -443,7 +446,7 @@ class GameFinderService {
     return this.filterAndDeduplicateResults(allResults, gameName);
   }
 
-  // Filter results specifically for games
+  // Filter results specifically for games with intelligent matching
   filterAndDeduplicateResults(results, gameName) {
     console.log(`🔍 Filtering ${results.length} raw results for "${gameName}"`);
     
@@ -465,57 +468,350 @@ class GameFinderService {
       }
       if (hash) seen.add(hash);
       
-      // Game relevance check (RELAXED)
-      const name = item.name.toLowerCase();
-      const searchTerm = gameName.toLowerCase();
+      // Smart game relevance check
+      const relevanceScore = this.calculateGameRelevance(item.name, gameName);
+      const isGameRelease = gameKeywords.some(keyword => item.name.toLowerCase().includes(keyword));
       
-      // More flexible name matching
-      const searchWords = searchTerm.split(' ').filter(word => word.length > 2);
-      const containsGameName = name.includes(searchTerm) || 
-                              searchWords.some(word => name.includes(word));
-      const isGameRelease = gameKeywords.some(keyword => name.includes(keyword));
-      
-      // TEMPORARILY ALLOW ALL RESULTS for debugging
-      const isRelevant = true; // containsGameName || isGameRelease;
+      // More strict relevance filtering - must be game-related AND have some relevance to search term
+      const isRelevant = (relevanceScore.score > 10) && (isGameRelease || relevanceScore.score > 30);
       
       if (!isRelevant) {
-        console.log(`❌ Filtered out: Not game relevant - ${item.name}`);
+        console.log(`❌ Filtered out: Low relevance (${relevanceScore.score}) - ${item.name}`);
         return false;
       }
       
-      // Size filtering (RELAXED: 1MB to 200GB)
+      // Size filtering (reasonable game sizes: 10MB to 200GB)
       const sizeBytes = typeof item.size === 'string' ? this.parseSize(item.size) : item.size;
-      const reasonableSize = !sizeBytes || (sizeBytes > 1024 * 1024 && sizeBytes < 200 * 1024 * 1024 * 1024);
+      const reasonableSize = !sizeBytes || (sizeBytes > 10 * 1024 * 1024 && sizeBytes < 200 * 1024 * 1024 * 1024);
       
       if (!reasonableSize) {
         console.log(`❌ Filtered out: Size too small/large - ${item.name} (${this.formatSize(sizeBytes)})`);
         return false;
       }
       
-      // Seeder threshold (RELAXED: allow 0 seeders for debugging)
-      const hasEnoughSeeders = true; // (item.seeders || 0) >= 0;
+      // Seeder threshold - prefer torrents with at least 1 seeder, but allow 0 for rare games
+      const hasDecentSeeders = !item.seeders || item.seeders >= 0;
       
-      if (!hasEnoughSeeders) {
+      if (!hasDecentSeeders) {
         console.log(`❌ Filtered out: Not enough seeders - ${item.name} (${item.seeders} seeders)`);
         return false;
       }
       
-      console.log(`✅ Keeping: ${item.name} (${item.seeders} seeders, ${this.formatSize(sizeBytes)})`);
+      console.log(`✅ Keeping: ${item.name} (relevance: ${relevanceScore.score}, ${item.seeders} seeders, ${this.formatSize(sizeBytes)})`);
       return true;
     });
 
     console.log(`📊 After filtering: ${filtered.length} results remaining`);
     
-    const withQuality = filtered.map(item => ({
-      ...item,
-      quality: this.calculateQuality(item.name, item.seeders, item.size)
-    }));
+    // Calculate enhanced quality scores that include relevance
+    const withQuality = filtered.map(item => {
+      const baseQuality = this.calculateQuality(item.name, item.seeders, item.size);
+      const relevanceScore = this.calculateGameRelevance(item.name, gameName);
+      
+      return {
+        ...item,
+        quality: baseQuality + relevanceScore.score, // Boost quality with relevance
+        relevance: relevanceScore.score,
+        matchType: relevanceScore.type
+      };
+    });
 
-    const sorted = withQuality.sort((a, b) => b.quality - a.quality);
+    // Sort by relevance first, then quality
+    const sorted = withQuality.sort((a, b) => {
+      // Primary sort: relevance score
+      if (Math.abs(a.relevance - b.relevance) > 20) {
+        return b.relevance - a.relevance;
+      }
+      // Secondary sort: overall quality
+      return b.quality - a.quality;
+    });
+    
     const final = sorted.slice(0, 50); // Limit to top 50 results
     
     console.log(`📊 Final results: ${final.length} torrents`);
+    final.forEach((item, i) => {
+      console.log(`${i + 1}. ${item.name} (relevance: ${item.relevance}, quality: ${item.quality}, type: ${item.matchType})`);
+    });
+    
     return final;
+  }
+
+  // Calculate how relevant a torrent name is to the search term
+  calculateGameRelevance(torrentName, searchTerm) {
+    const torrent = torrentName.toLowerCase();
+    const search = searchTerm.toLowerCase();
+    
+    // Remove common words that don't affect relevance (but keep repacker names and versions)
+    const cleanTorrent = this.cleanGameTitle(torrent);
+    const cleanSearch = this.cleanGameTitle(search);
+    
+    let score = 0;
+    let matchType = 'none';
+    
+    // 1. Exact match (highest priority)
+    if (cleanTorrent === cleanSearch) {
+      score = 100;
+      matchType = 'exact';
+    }
+    // 2. Exact match including common variations
+    else if (this.isExactVariation(cleanTorrent, cleanSearch)) {
+      score = 90;
+      matchType = 'exact_variation';
+    }
+    // 3. Search term is at the start of torrent name
+    else if (cleanTorrent.startsWith(cleanSearch)) {
+      score = 80;
+      matchType = 'starts_with';
+    }
+    // 4. All search words present as complete words
+    else if (this.hasAllWordsComplete(cleanTorrent, cleanSearch)) {
+      score = 70;
+      matchType = 'all_words_complete';
+    }
+    // 5. Search term appears as complete substring
+    else if (torrent.includes(search)) {
+      score = 60;
+      matchType = 'contains_complete';
+    }
+    // 6. Most search words present
+    else {
+      const wordMatchScore = this.calculateWordMatchScore(cleanTorrent, cleanSearch);
+      if (wordMatchScore > 0.6) {
+        score = Math.floor(wordMatchScore * 50);
+        matchType = 'partial_words';
+      }
+    }
+    
+    // Boost for enhanced/definitive/complete editions when searching for base game
+    if (score > 30 && this.isEnhancedEdition(torrent) && !this.isEnhancedEdition(search)) {
+      score += 15;
+      matchType += '_enhanced';
+    }
+    
+    // Penalty for numbered sequels when searching for base game (but NOT version numbers)
+    if (score > 30 && this.isNumberedSequel(torrent, search)) {
+      score -= 30;
+      matchType += '_sequel_penalty';
+    }
+    
+    // Bonus for newer versions
+    const versionBonus = this.calculateVersionBonus(torrent);
+    if (versionBonus > 0) {
+      score += versionBonus;
+      matchType += '_newer_version';
+    }
+    
+    // Bonus for trusted repackers (these are quality indicators)
+    const repackerBonus = this.calculateRepackerBonus(torrent);
+    if (repackerBonus > 0) {
+      score += repackerBonus;
+      matchType += '_trusted_repacker';
+    }
+    
+    return { score, type: matchType };
+  }
+
+  // Clean game title by removing only non-essential words (preserve repacker names and versions)
+  cleanGameTitle(title) {
+    return title
+      .replace(/[\[\]()]/g, ' ')  // Remove brackets
+      .replace(/\b(repack|cracked?|full)\b/gi, ' ') // Only remove generic release terms
+      .replace(/\s+/g, ' ')       // Normalize spaces
+      .trim();
+  }
+
+  // Check if torrent name is an exact variation of search term
+  isExactVariation(torrent, search) {
+    // Handle common variations like "Game Name" vs "GameName" vs "Game-Name"
+    const normalize = (str) => str.replace(/[\s\-_\.]/g, '').toLowerCase();
+    return normalize(torrent) === normalize(search);
+  }
+
+  // Check if all search words appear as complete words in torrent
+  hasAllWordsComplete(torrent, search) {
+    const searchWords = search.split(/\s+/).filter(word => word.length > 2);
+    if (searchWords.length === 0) return false;
+    
+    return searchWords.every(word => {
+      const regex = new RegExp(`\\b${word}\\b`, 'i');
+      return regex.test(torrent);
+    });
+  }
+
+  // Calculate what percentage of search words are found in torrent
+  calculateWordMatchScore(torrent, search) {
+    const searchWords = search.split(/\s+/).filter(word => word.length > 2);
+    if (searchWords.length === 0) return 0;
+    
+    const foundWords = searchWords.filter(word => torrent.includes(word));
+    return foundWords.length / searchWords.length;
+  }
+
+  // Check if this is an enhanced/definitive edition
+  isEnhancedEdition(title) {
+    const enhancedKeywords = ['enhanced', 'definitive', 'complete', 'ultimate', 'director', 'goty', 'game of the year', 'special', 'deluxe', 'premium'];
+    return enhancedKeywords.some(keyword => title.includes(keyword));
+  }
+
+  // Check if this appears to be a numbered sequel (NOT version numbers)
+  isNumberedSequel(torrent, search) {
+    // Don't penalize if search already contains numbers
+    if (/\d/.test(search)) return false;
+    
+    // Look for sequel indicators that suggest this is a different game
+    const sequelPatterns = [
+      /\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b(?!\s*\d)/i,  // Roman numerals not followed by digits
+      /\b\d+(?!\.\d)\b/,  // Numbers not followed by decimal (to avoid version numbers)
+      /\b(two|three|four|five|six|seven|eight|nine|ten)\b/i  // Written numbers
+    ];
+    
+    // Check if torrent has sequel patterns but search doesn't
+    return sequelPatterns.some(pattern => {
+      const torrentMatch = pattern.test(torrent);
+      const searchMatch = pattern.test(search);
+      return torrentMatch && !searchMatch;
+    });
+  }
+
+  // Calculate bonus for newer versions
+  calculateVersionBonus(torrent) {
+    // Different version patterns with their relative importance
+    const versionPatterns = [
+      { 
+        regex: /\bv?(\d+)\.(\d+)\.(\d+)([a-z]?)\b/gi, 
+        type: 'semantic',
+        priority: 100 
+      },
+      { 
+        regex: /\bv?(\d+)\.(\d+)([a-z]?)\b/gi, 
+        type: 'major_minor',
+        priority: 90 
+      },
+      { 
+        regex: /\b(20\d{2})\.(\d{1,2})\.(\d{1,2})\b/gi, 
+        type: 'date',
+        priority: 80 
+      },
+      { 
+        regex: /\bbuild\s*(\d+)\b/gi, 
+        type: 'build',
+        priority: 70 
+      }
+    ];
+
+    let bestVersionScore = 0;
+    let bestVersionType = '';
+
+    versionPatterns.forEach(pattern => {
+      const matches = [...torrent.matchAll(pattern.regex)];
+      
+      matches.forEach(match => {
+        let score = 0;
+        
+        switch (pattern.type) {
+          case 'semantic':
+            {
+              const major = parseInt(match[1]) || 0;
+              const minor = parseInt(match[2]) || 0;
+              const patch = parseInt(match[3]) || 0;
+              const suffix = match[4] || '';
+              
+              // Semantic version scoring: major.minor.patch
+              score = major * 10000 + minor * 100 + patch;
+              
+              // Handle alpha/beta suffixes (lower priority than stable)
+              if (suffix === 'a' || suffix.includes('alpha')) score -= 5;
+              else if (suffix === 'b' || suffix.includes('beta') || suffix.includes('rc')) score -= 3;
+              
+              console.log(`Version ${match[0]}: major=${major}, minor=${minor}, patch=${patch}, suffix='${suffix}', score=${score}`);
+            }
+            break;
+            
+          case 'major_minor':
+            {
+              const major = parseInt(match[1]) || 0;
+              const minor = parseInt(match[2]) || 0;
+              const suffix = match[3] || '';
+              
+              // Major.minor scoring (treat as .0 patch)
+              score = major * 10000 + minor * 100;
+              
+              // Handle alpha/beta suffixes
+              if (suffix === 'a' || suffix.includes('alpha')) score -= 5;
+              else if (suffix === 'b' || suffix.includes('beta') || suffix.includes('rc')) score -= 3;
+              
+              console.log(`Version ${match[0]}: major=${major}, minor=${minor}, suffix='${suffix}', score=${score}`);
+            }
+            break;
+            
+          case 'date':
+            {
+              const year = parseInt(match[1]) || 0;
+              const month = parseInt(match[2]) || 0;
+              const day = parseInt(match[3]) || 0;
+              
+              // Date scoring (more recent = higher score)
+              score = (year - 2020) * 1000 + month * 30 + day;
+              
+              console.log(`Date version ${match[0]}: year=${year}, month=${month}, day=${day}, score=${score}`);
+            }
+            break;
+            
+          case 'build':
+            {
+              const buildNumber = parseInt(match[1]) || 0;
+              
+              // Build number scoring (higher build = higher score)
+              score = Math.min(buildNumber / 1000, 9999); // Cap to prevent overflow
+              
+              console.log(`Build version ${match[0]}: build=${buildNumber}, score=${score}`);
+            }
+            break;
+        }
+        
+        // Apply pattern priority multiplier
+        const weightedScore = score * (pattern.priority / 100);
+        
+        if (weightedScore > bestVersionScore) {
+          bestVersionScore = weightedScore;
+          bestVersionType = pattern.type;
+        }
+      });
+    });
+
+    // Convert to bonus points (0-15 points based on version)
+    const bonus = Math.min(Math.floor(bestVersionScore / 500), 15);
+    
+    if (bonus > 0) {
+      console.log(`Best version score: ${bestVersionScore} (${bestVersionType}), bonus: ${bonus}`);
+    }
+    
+    return bonus;
+  }
+
+  // Calculate bonus for trusted repackers
+  calculateRepackerBonus(torrent) {
+    const repackerBonuses = {
+      'fitgirl': 10,      // Highest quality, most trusted
+      'dodi': 8,          // High quality, trusted
+      'gog': 7,           // Official DRM-free releases
+      'codex': 6,         // Well-known scene group
+      'plaza': 6,         // Well-known scene group
+      'skidrow': 5,       // Established scene group
+      'steam': 4,         // Official platform releases
+      'empress': 4,       // Known for difficult cracks
+      'cpy': 3,           // Copy scene group
+      'reloaded': 3       // Established group
+    };
+    
+    let maxBonus = 0;
+    Object.entries(repackerBonuses).forEach(([repacker, bonus]) => {
+      if (torrent.includes(repacker)) {
+        maxBonus = Math.max(maxBonus, bonus);
+      }
+    });
+    
+    return maxBonus;
   }
 
   // Extract hash from magnet link
@@ -834,6 +1130,34 @@ class GameFinderService {
       console.error('Error saving download location:', error);
       throw new Error('Failed to save download location');
     }
+  }
+
+  // Check if a torrent is a repack
+  isRepackTorrent(torrentName) {
+    const repackIndicators = [
+      'fitgirl', 'dodi', 'masquerade', 'repack', 'repacked',
+      'darck', 'selective', 'skidrow', 'codex', 'plaza'
+    ];
+    
+    const name = torrentName.toLowerCase();
+    return repackIndicators.some(indicator => name.includes(indicator));
+  }
+
+  // Get the repack type from torrent name
+  getRepackType(torrentName) {
+    const name = torrentName.toLowerCase();
+    
+    if (name.includes('fitgirl')) return 'FitGirl Repack';
+    if (name.includes('dodi')) return 'DODI Repack';
+    if (name.includes('masquerade')) return 'Masquerade Repack';
+    if (name.includes('darck')) return 'Darck Repack';
+    if (name.includes('selective')) return 'Selective Repack';
+    if (name.includes('skidrow')) return 'SKIDROW Release';
+    if (name.includes('codex')) return 'CODEX Release';
+    if (name.includes('plaza')) return 'PLAZA Release';
+    if (name.includes('repack')) return 'Game Repack';
+    
+    return 'Compressed Release';
   }
 
   // Clean up old download statuses

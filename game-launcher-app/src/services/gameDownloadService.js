@@ -266,9 +266,19 @@ class GameDownloadService {
                   const extractionResult = await this.extractFile(downloadStatus);
                   
                   if (extractionResult.success) {
-                    downloadStatus.status = 'extraction_complete';
                     downloadStatus.extractionProgress = 100;
                     downloadStatus.extractedPath = extractionResult.extractedPath;
+                    
+                    // Set different statuses based on whether it's a repack
+                    if (extractionResult.isRepack) {
+                      downloadStatus.status = 'needs_setup';
+                      downloadStatus.isRepack = true;
+                      downloadStatus.repackType = this.getRepackType(downloadStatus.filename);
+                      console.log(`📦 Repack extracted to temp: ${extractionResult.extractedPath} - Ready for installation`);
+                    } else {
+                      downloadStatus.status = 'extraction_complete';
+                      console.log(`✅ Game extracted and ready to play: ${extractionResult.extractedPath}`);
+                    }
                     
                     // Clean up downloaded archive after successful extraction
                     try {
@@ -504,25 +514,73 @@ class GameDownloadService {
     return extractableExtensions.includes(ext);
   }
 
+  // Check if file is likely a repack based on filename
+  isRepackFile(filename) {
+    const repackIndicators = [
+      'fitgirl', 'dodi', 'masquerade', 'repack', 'repacked',
+      'darck', 'selective', 'skidrow', 'codex', 'plaza',
+      'empress', 'cpy', 'reloaded'
+    ];
+    
+    const name = filename.toLowerCase();
+    return repackIndicators.some(indicator => name.includes(indicator));
+  }
+
+  // Get the repack type from filename
+  getRepackType(filename) {
+    const name = filename.toLowerCase();
+    
+    if (name.includes('fitgirl')) return 'FitGirl Repack';
+    if (name.includes('dodi')) return 'DODI Repack';
+    if (name.includes('masquerade')) return 'Masquerade Repack';
+    if (name.includes('darck')) return 'Darck Repack';
+    if (name.includes('selective')) return 'Selective Repack';
+    if (name.includes('skidrow')) return 'SKIDROW Release';
+    if (name.includes('codex')) return 'CODEX Release';
+    if (name.includes('plaza')) return 'PLAZA Release';
+    if (name.includes('empress')) return 'EMPRESS Release';
+    if (name.includes('cpy')) return 'CPY Release';
+    if (name.includes('reloaded')) return 'RLD Release';
+    if (name.includes('repack')) return 'Game Repack';
+    
+    return 'Compressed Release';
+  }
+
   // Extract file using built-in extraction or external tools
   async extractFile(downloadStatus) {
     try {
       const { tempFilePath, gameInfo, finalDestination } = downloadStatus;
       const ext = path.extname(tempFilePath).toLowerCase();
       
-      // Create extraction directory
-      const gameName = gameInfo.gameName.replace(/[<>:"/\\|?*]/g, '_');
-      const extractionPath = path.join(finalDestination, gameName);
+      // Check if this is a repack based on filename
+      const isRepack = this.isRepackFile(downloadStatus.filename);
+      
+      // Determine extraction destination
+      let extractionPath;
+      if (isRepack) {
+        // For repacks, extract to temp directory first
+        const tempDir = path.join(this.tempDirectory, 'repack_extraction');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        const gameName = gameInfo.gameName.replace(/[<>:"/\\|?*]/g, '_');
+        extractionPath = path.join(tempDir, gameName);
+      } else {
+        // For regular games, extract directly to download directory
+        const gameName = gameInfo.gameName.replace(/[<>:"/\\|?*]/g, '_');
+        extractionPath = path.join(finalDestination, gameName);
+      }
       
       // Ensure extraction directory exists
       if (!fs.existsSync(extractionPath)) {
         fs.mkdirSync(extractionPath, { recursive: true });
       }
       
-      console.log(`📦 Extracting ${tempFilePath} to ${extractionPath}`);
+      console.log(`📦 Extracting ${tempFilePath} to ${extractionPath}${isRepack ? ' (repack - temp location)' : ''}`);
       
       // Update extraction progress
       downloadStatus.extractionProgress = 10;
+      downloadStatus.isRepack = isRepack;
       this.activeDownloads.set(downloadStatus.id, downloadStatus);
       
       let extractionResult;
@@ -541,7 +599,8 @@ class GameDownloadService {
         console.log(`✅ Successfully extracted to: ${extractionPath}`);
         return {
           success: true,
-          extractedPath: extractionPath
+          extractedPath: extractionPath,
+          isRepack: isRepack
         };
       } else {
         throw new Error(extractionResult.error);

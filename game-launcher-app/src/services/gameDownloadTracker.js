@@ -21,6 +21,7 @@ const DOWNLOAD_STATUS = {
   DOWNLOAD_COMPLETE: 'download_complete',
   EXTRACTING: 'extracting',
   EXTRACTION_COMPLETE: 'extraction_complete',
+  NEEDS_SETUP: 'needs_setup',
   FINDING_EXECUTABLE: 'finding_executable',
   COMPLETE: 'complete',
   ERROR: 'error'
@@ -37,6 +38,7 @@ const STATUS_MESSAGES = {
   [DOWNLOAD_STATUS.DOWNLOAD_COMPLETE]: 'Download Complete',
   [DOWNLOAD_STATUS.EXTRACTING]: 'Extracting files...',
   [DOWNLOAD_STATUS.EXTRACTION_COMPLETE]: 'Extraction Complete',
+  [DOWNLOAD_STATUS.NEEDS_SETUP]: 'Needs Installation',
   [DOWNLOAD_STATUS.FINDING_EXECUTABLE]: 'Setting up game...',
   [DOWNLOAD_STATUS.COMPLETE]: 'Game is ready',
   [DOWNLOAD_STATUS.ERROR]: 'Error'

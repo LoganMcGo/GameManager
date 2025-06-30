@@ -472,10 +472,69 @@ function AvailableDownloads({ gameName, gameId, game, onNavigateToLibrary, onNav
                       </div>
                     )}
 
-                    {/* Error Message */}
+                    {/* Error Message with Retry Button */}
                     {download.status === 'error' && download.error && (
-                      <div className="mt-2 p-2 bg-red-900 border border-red-700 rounded text-red-300 text-sm">
-                        {download.error}
+                      <div className="mt-2 p-3 bg-red-900 border border-red-700 rounded text-red-300 text-sm">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <p className="font-medium mb-1">Download Failed:</p>
+                            <p>{download.error}</p>
+                          </div>
+                          <button
+                            onClick={async () => {
+                              try {
+                                console.log('🔄 Retrying download:', download.gameName);
+                                
+                                // Remove the failed download from tracking
+                                await window.api.downloadTracker.removeDownload(download.id);
+                                
+                                // Start a new download with the same magnet link
+                                if (download.magnetLink) {
+                                  const newDownloadId = await window.api.downloadTracker.startTracking({
+                                    game: game || { id: gameId, name: gameName },
+                                    magnetLink: download.magnetLink,
+                                    torrentName: download.torrentName || download.gameName
+                                  });
+                                  
+                                  console.log(`📋 Started retry with ID: ${newDownloadId}`);
+                                  
+                                  // Add magnet to Real-Debrid again
+                                  const addResponse = await gameFinderService.addToRealDebrid({ 
+                                    magnet: download.magnetLink, 
+                                    name: download.torrentName || download.gameName 
+                                  });
+                                  
+                                  if (addResponse.success) {
+                                    console.log('✅ Retry successful - magnet re-added to Real-Debrid');
+                                    
+                                    // Update tracking with torrent ID if available
+                                    if (addResponse.data?.id) {
+                                      await window.api.downloadTracker.updateStatus(newDownloadId, 'starting_torrent', {
+                                        torrentId: addResponse.data.id
+                                      });
+                                    }
+                                  } else {
+                                    // If retry fails, update the new download with error
+                                    await window.api.downloadTracker.updateStatus(newDownloadId, 'error', {
+                                      error: addResponse.error || 'Failed to retry - Real-Debrid error'
+                                    });
+                                  }
+                                } else {
+                                  console.warn('⚠️ Cannot retry: No magnet link available');
+                                }
+                              } catch (error) {
+                                console.error('❌ Error retrying download:', error);
+                              }
+                            }}
+                            className="ml-3 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs transition-colors flex items-center space-x-1"
+                            title="Retry download"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            </svg>
+                            <span>Retry</span>
+                          </button>
+                        </div>
                       </div>
                     )}
 
