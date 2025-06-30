@@ -29,7 +29,6 @@ class GameDownloadService {
         fs.mkdirSync(this.tempDirectory, { recursive: true });
       }
       
-      console.log(`📁 Temp download directory initialized: ${this.tempDirectory}`);
     } catch (error) {
       console.error('Failed to initialize temp directory:', error);
     }
@@ -50,7 +49,6 @@ class GameDownloadService {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         if (config.downloadLocation && fs.existsSync(config.downloadLocation)) {
           this.downloadLocation = config.downloadLocation;
-          console.log(`📁 Loaded download location: ${this.downloadLocation}`);
         }
       }
     } catch (error) {
@@ -69,7 +67,6 @@ class GameDownloadService {
       const config = { downloadLocation: this.downloadLocation };
       
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      console.log(`💾 Saved download location: ${this.downloadLocation}`);
     } catch (error) {
       console.warn('Failed to save download location:', error.message);
     }
@@ -125,15 +122,16 @@ class GameDownloadService {
     ipcMain.handle('download:start-with-extraction', async (event, downloadInfo) => {
       return await this.startDownloadWithExtraction(downloadInfo);
     });
+
+    // Check if path exists
+    ipcMain.handle('download:check-path-exists', async (event, pathToCheck) => {
+      return this.checkPathExists(pathToCheck);
+    });
   }
 
   async startDownload(downloadInfo) {
     try {
       const { url, filename, downloadPath, downloadId } = downloadInfo;
-      
-      console.log(`🔄 Starting download: ${filename}`);
-      console.log(`📁 Final destination: ${downloadPath}`);
-      console.log(`🔗 URL: ${url}`);
 
       // Validate inputs
       if (!url || !filename || !downloadPath || !downloadId) {
@@ -148,8 +146,6 @@ class GameDownloadService {
       // Create temp file path for download
       const tempFilename = `${Date.now()}_${filename}`;
       const tempFilePath = path.join(this.tempDirectory, tempFilename);
-      
-      console.log(`📁 Temp download path: ${tempFilePath}`);
 
       // Initialize download status
       const downloadStatus = {
@@ -166,7 +162,9 @@ class GameDownloadService {
         startTime: Date.now(),
         error: null,
         gameInfo: downloadInfo.gameInfo || null, // Store game info for extraction
-        autoExtract: downloadInfo.autoExtract || false
+        autoExtract: downloadInfo.autoExtract || false,
+        isRepack: downloadInfo.isRepack || false, // Store repack flag
+        repackType: downloadInfo.repackType || null
       };
 
       this.activeDownloads.set(downloadId, downloadStatus);
@@ -177,7 +175,7 @@ class GameDownloadService {
       return { success: true, downloadId };
 
     } catch (error) {
-      console.error(`❌ Error starting download:`, error);
+      console.error(`Error starting download:`, error);
       return { success: false, error: error.message };
     }
   }
@@ -200,7 +198,6 @@ class GameDownloadService {
         const request = protocol.get(downloadStatus.url, (response) => {
           // Handle redirects
           if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-            console.log(`🔄 Redirecting to: ${response.headers.location}`);
             downloadStatus.url = response.headers.location;
             return this.performDownload(downloadStatus);
           }
@@ -235,8 +232,6 @@ class GameDownloadService {
               
               this.activeDownloads.set(downloadStatus.id, downloadStatus);
               lastUpdate = now;
-              
-              console.log(`📈 Download progress: ${downloadStatus.filename} - ${downloadStatus.progress.toFixed(1)}%`);
             }
           });
 
@@ -248,8 +243,6 @@ class GameDownloadService {
             downloadStatus.progress = 100;
             downloadStatus.endTime = Date.now();
             this.activeDownloads.set(downloadStatus.id, downloadStatus);
-            
-            console.log(`✅ Download completed: ${downloadStatus.filename}`);
 
             // Auto-extract if enabled
             if (downloadStatus.autoExtract && downloadStatus.gameInfo) {
@@ -257,8 +250,6 @@ class GameDownloadService {
                 const needsExtraction = this.needsExtraction(downloadStatus.tempFilePath);
                 
                 if (needsExtraction) {
-                  console.log(`🔧 Starting automatic extraction for: ${downloadStatus.filename}`);
-                  
                   downloadStatus.status = 'extracting';
                   downloadStatus.extractionProgress = 0;
                   this.activeDownloads.set(downloadStatus.id, downloadStatus);
@@ -273,7 +264,6 @@ class GameDownloadService {
                     // Clean up downloaded archive after successful extraction
                     try {
                       fs.unlinkSync(downloadStatus.tempFilePath);
-                      console.log(`🗑️ Cleaned up archive: ${downloadStatus.filename}`);
                     } catch (cleanupError) {
                       console.warn('Failed to cleanup archive:', cleanupError.message);
                     }
@@ -295,7 +285,6 @@ class GameDownloadService {
                     
                     // Move file from temp to final destination
                     fs.renameSync(downloadStatus.tempFilePath, finalFilePath);
-                    console.log(`📁 Moved file to: ${finalFilePath}`);
                     
                     downloadStatus.status = 'complete';
                     downloadStatus.finalPath = finalFilePath;
@@ -324,7 +313,6 @@ class GameDownloadService {
                 
                 // Move file from temp to final destination
                 fs.renameSync(downloadStatus.tempFilePath, finalFilePath);
-                console.log(`📁 Moved file to: ${finalFilePath}`);
                 
                 downloadStatus.status = 'complete';
                 downloadStatus.finalPath = finalFilePath;
@@ -351,7 +339,7 @@ class GameDownloadService {
               console.warn('Failed to clean up partial file:', e.message);
             }
             
-            console.error(`❌ Download failed: ${error.message}`);
+            console.error(`Download failed: ${error.message}`);
             reject(error);
           });
 
@@ -362,7 +350,7 @@ class GameDownloadService {
           downloadStatus.error = error.message;
           this.activeDownloads.set(downloadStatus.id, downloadStatus);
           
-          console.error(`❌ Request error: ${error.message}`);
+          console.error(`Request error: ${error.message}`);
           reject(error);
         });
 
@@ -374,7 +362,7 @@ class GameDownloadService {
         downloadStatus.error = error.message;
         this.activeDownloads.set(downloadStatus.id, downloadStatus);
         
-        console.error(`❌ Download error: ${error.message}`);
+        console.error(`Download error: ${error.message}`);
         reject(error);
       }
     });
@@ -486,6 +474,15 @@ class GameDownloadService {
     }
   }
 
+  checkPathExists(pathToCheck) {
+    try {
+      return fs.existsSync(pathToCheck);
+    } catch (error) {
+      console.error('Error checking path exists:', error);
+      return false;
+    }
+  }
+
   // Clean up completed downloads older than 24 hours
   cleanup() {
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -512,7 +509,20 @@ class GameDownloadService {
       
       // Create extraction directory
       const gameName = gameInfo.gameName.replace(/[<>:"/\\|?*]/g, '_');
-      const extractionPath = path.join(finalDestination, gameName);
+      
+      // Check if this is a repack - if so, extract to temp folder
+      const isRepack = downloadStatus.isRepack || this.isRepackFile(tempFilePath, gameInfo.gameName);
+      let extractionPath;
+      
+      if (isRepack) {
+        // For repacks, extract to temp folder
+        extractionPath = path.join(this.tempDirectory, `repack_${gameName}_${Date.now()}`);
+        console.log(`📦 Repack detected - extracting to temp folder: ${extractionPath}`);
+      } else {
+        // For regular games, extract to download folder
+        extractionPath = path.join(finalDestination, gameName);
+        console.log(`📦 Regular game - extracting to download folder: ${extractionPath}`);
+      }
       
       // Ensure extraction directory exists
       if (!fs.existsSync(extractionPath)) {
@@ -520,6 +530,10 @@ class GameDownloadService {
       }
       
       console.log(`📦 Extracting ${tempFilePath} to ${extractionPath}`);
+      
+      // Store extraction path in download status for later use
+      downloadStatus.extractionPath = extractionPath;
+      downloadStatus.isRepack = isRepack;
       
       // Update extraction progress
       downloadStatus.extractionProgress = 10;
@@ -554,6 +568,21 @@ class GameDownloadService {
         error: error.message
       };
     }
+  }
+
+  // Check if a file is a repack
+  isRepackFile(filePath, gameName) {
+    const fileName = path.basename(filePath).toLowerCase();
+    const gameNameLower = gameName.toLowerCase();
+    
+    const repackIndicators = [
+      'fitgirl', 'dodi', 'masquerade', 'repack', 'repacked',
+      'darck', 'selective', 'skidrow', 'codex', 'plaza'
+    ];
+    
+    return repackIndicators.some(indicator => 
+      fileName.includes(indicator) || gameNameLower.includes(indicator)
+    );
   }
 
   // Extract ZIP files using built-in modules

@@ -42,6 +42,14 @@ const STATUS_MESSAGES = {
   [DOWNLOAD_STATUS.ERROR]: 'Error'
 };
 
+// Get status message based on download type
+function getStatusMessage(status, isRepack = false) {
+  if (status === DOWNLOAD_STATUS.COMPLETE) {
+    return isRepack ? 'Game needs manual setup to finish installation' : 'Game is ready';
+  }
+  return STATUS_MESSAGES[status] || status;
+}
+
 // Optimized monitor instance
 let optimizedMonitor = null;
 
@@ -101,6 +109,10 @@ function startTracking(gameData, magnetLink, torrentId = null, torrentName = nul
     gameImage = gameData.screenshots[0];
   }
   
+  // Check if this is a repack by examining the torrent name
+  const isRepack = isRepackTorrent(torrentName || gameData.name);
+  const repackType = isRepack ? getRepackType(torrentName || gameData.name) : null;
+  
   const download = {
     id: downloadId,
     gameId: gameData.id || gameData.appId,
@@ -119,7 +131,9 @@ function startTracking(gameData, magnetLink, torrentId = null, torrentName = nul
     lastUpdated: Date.now(),
     error: null,
     realDebridDownloadId: null,
-    localDownloadId: null
+    localDownloadId: null,
+    isRepack: isRepack,
+    repackType: repackType
   };
   
   // Store the download
@@ -129,7 +143,6 @@ function startTracking(gameData, magnetLink, torrentId = null, torrentName = nul
   
   // Monitoring is handled by the optimized monitor automatically
   
-  console.log(`Started tracking download for game: ${gameData.name}${gameImage ? ` with image: ${gameImage}` : ' (no image found)'}`);
   return downloadId;
 }
 
@@ -145,7 +158,7 @@ function updateDownloadStatus(downloadId, status, data = {}) {
   
   // Update basic status
   download.status = status;
-  download.statusMessage = STATUS_MESSAGES[status] || status;
+  download.statusMessage = getStatusMessage(status, download.isRepack);
   download.lastUpdated = Date.now();
   
   // Update additional data
@@ -154,8 +167,6 @@ function updateDownloadStatus(downloadId, status, data = {}) {
   // Save updates
   downloads[downloadId] = download;
   downloadStore.set('downloads', downloads);
-  
-  console.log(`Updated download ${downloadId} status: ${status}`);
   
   // Emit update to UI
   const { BrowserWindow } = require('electron');
@@ -214,8 +225,6 @@ async function startLocalDownload(downloadId, torrentData) {
 // Start local download process using the download service
 async function startLocalDownloadProcess(gameDownloadId, url, filename) {
   try {
-    console.log(`🚀 Starting local download process for ${filename}`);
-    
     // Get the download info
     const downloads = downloadStore.get('downloads', {});
     const download = downloads[gameDownloadId];
@@ -231,7 +240,6 @@ async function startLocalDownloadProcess(gameDownloadId, url, filename) {
     }
     
     const downloadLocation = downloadService.getDownloadLocation();
-    console.log(`📁 Download location: ${downloadLocation}`);
     
     if (!downloadLocation || downloadLocation.trim() === '') {
       throw new Error('Download location not set. Please configure download location in settings.');
@@ -245,7 +253,6 @@ async function startLocalDownloadProcess(gameDownloadId, url, filename) {
     
     // Create local download ID
     const localDownloadId = `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    console.log(`🆔 Created local download ID: ${localDownloadId}`);
     
     // Start the download
     const downloadInfo = {
@@ -257,15 +264,10 @@ async function startLocalDownloadProcess(gameDownloadId, url, filename) {
         gameId: download.gameId,
         gameName: download.gameName
       },
-      autoExtract: true // Enable auto-extraction for game downloads
+      autoExtract: true, // Enable auto-extraction for game downloads
+      isRepack: download.isRepack || false, // Pass repack flag to download service
+      repackType: download.repackType || null
     };
-    
-    console.log(`📦 Starting download with info:`, {
-      filename,
-      downloadPath: downloadLocation,
-      downloadId: localDownloadId,
-      gameName: download.gameName
-    });
     
     const result = await downloadService.startDownloadWithExtraction(downloadInfo);
     
@@ -273,11 +275,10 @@ async function startLocalDownloadProcess(gameDownloadId, url, filename) {
       throw new Error(result.error || 'Failed to start download');
     }
     
-    console.log(`✅ Started local download: ${filename} (ID: ${localDownloadId})`);
     return localDownloadId;
     
   } catch (error) {
-    console.error(`❌ Error starting local download for ${filename}:`, error);
+    console.error(`Error starting local download for ${filename}:`, error);
     throw error;
   }
 }
@@ -329,7 +330,6 @@ function removeTrackedDownload(event, downloadId) {
   
   // Monitoring cleanup is handled automatically by OptimizedDownloadMonitor
   
-  console.log(`Removed tracked download: ${downloadId}`);
   return { success: true };
 }
 
@@ -347,15 +347,12 @@ function clearCompletedDownloads() {
   
   downloadStore.set('downloads', activeDownloads);
   
-  console.log('Cleared completed downloads');
   return { success: true };
 }
 
 // Find and setup executable for the extracted game
 async function findAndSetupExecutable(downloadId) {
   try {
-    console.log(`🔍 Finding executable for download ${downloadId}`);
-    
     const downloads = downloadStore.get('downloads', {});
     const download = downloads[downloadId];
     
@@ -366,7 +363,39 @@ async function findAndSetupExecutable(downloadId) {
     
     updateDownloadStatus(downloadId, DOWNLOAD_STATUS.FINDING_EXECUTABLE);
     
-    // Get the download service to find the extracted game directory
+    // Check if this is a repack
+    if (download.isRepack) {
+      // Get the extraction path from the download service
+      let tempExtractionPath = null;
+      if (download.localDownloadId) {
+        const downloadService = global.gameDownloadService;
+        if (downloadService) {
+          const statusResult = downloadService.getDownloadStatus(download.localDownloadId);
+          if (statusResult.success && statusResult.download.extractionPath) {
+            tempExtractionPath = statusResult.download.extractionPath;
+          }
+        }
+      }
+      
+      // Also store it in the download tracker for future reference
+      if (tempExtractionPath) {
+        download.tempExtractionPath = tempExtractionPath;
+        const downloads = downloadStore.get('downloads', {});
+        downloads[downloadId] = download;
+        downloadStore.set('downloads', downloads);
+      }
+      
+      // For repacks, just mark as complete and ready for setup
+      updateDownloadStatus(downloadId, DOWNLOAD_STATUS.COMPLETE, {
+        needsManualSetup: true,
+        isRepack: true,
+        repackType: download.repackType,
+        tempExtractionPath: tempExtractionPath
+      });
+      return;
+    }
+    
+    // Regular game handling
     const downloadService = global.gameDownloadService;
     if (!downloadService) {
       throw new Error('Download service not available');
@@ -376,8 +405,6 @@ async function findAndSetupExecutable(downloadId) {
     const downloadLocation = downloadService.getDownloadLocation();
     const gameName = download.gameName.replace(/[<>:"/\\|?*]/g, '_'); // Sanitize folder name
     const gameDirectory = require('path').join(downloadLocation, gameName);
-    
-    console.log(`📁 Looking for executable in: ${gameDirectory}`);
     
     // Check if directory exists
     const fs = require('fs');
@@ -389,7 +416,6 @@ async function findAndSetupExecutable(downloadId) {
     const executableFiles = await findExecutableFiles(gameDirectory);
     
     if (executableFiles.length === 0) {
-      console.warn(`⚠️ No executable files found for ${download.gameName}`);
       // Still mark as complete, user can manually set executable later
       updateDownloadStatus(downloadId, DOWNLOAD_STATUS.COMPLETE, {
         gameDirectory: gameDirectory,
@@ -399,7 +425,6 @@ async function findAndSetupExecutable(downloadId) {
     } else {
       // Try to pick the best executable automatically
       const bestExecutable = selectBestExecutable(executableFiles, download.gameName);
-      console.log(`🎯 Selected executable: ${bestExecutable}`);
       
       updateDownloadStatus(downloadId, DOWNLOAD_STATUS.COMPLETE, {
         gameDirectory: gameDirectory,
@@ -410,7 +435,7 @@ async function findAndSetupExecutable(downloadId) {
     }
     
   } catch (error) {
-    console.error(`❌ Error finding executable for ${downloadId}:`, error);
+    console.error(`Error finding executable for ${downloadId}:`, error);
     updateDownloadStatus(downloadId, DOWNLOAD_STATUS.ERROR, {
       error: `Failed to setup game: ${error.message}`
     });
@@ -533,6 +558,33 @@ function selectBestExecutable(executableFiles, gameName) {
   })));
   
   return scoredExecutables[0].path;
+}
+
+// Helper functions for repack detection
+function isRepackTorrent(torrentName) {
+  const repackIndicators = [
+    'fitgirl', 'dodi', 'masquerade', 'repack', 'repacked',
+    'darck', 'selective', 'skidrow', 'codex', 'plaza'
+  ];
+  
+  const name = torrentName.toLowerCase();
+  return repackIndicators.some(indicator => name.includes(indicator));
+}
+
+function getRepackType(torrentName) {
+  const name = torrentName.toLowerCase();
+  
+  if (name.includes('fitgirl')) return 'FitGirl Repack';
+  if (name.includes('dodi')) return 'DODI Repack';
+  if (name.includes('masquerade')) return 'Masquerade Repack';
+  if (name.includes('darck')) return 'Darck Repack';
+  if (name.includes('selective')) return 'Selective Repack';
+  if (name.includes('skidrow')) return 'SKIDROW Release';
+  if (name.includes('codex')) return 'CODEX Release';
+  if (name.includes('plaza')) return 'PLAZA Release';
+  if (name.includes('repack')) return 'Game Repack';
+  
+  return 'Compressed Release';
 }
 
 module.exports = {

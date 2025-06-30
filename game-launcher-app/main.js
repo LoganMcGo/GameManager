@@ -191,7 +191,7 @@ async function initializeServices() {
     global.gameDownloadService = initGameDownloadService();
     
     console.log('🗜️ Initializing extraction service...');
-    global.extractionService = initGameExtractionService();
+    global.gameExtractionService = initGameExtractionService();
     
     console.log('🚀 Initializing launcher service...');
     global.launcherService = initGameLauncherService();
@@ -226,8 +226,8 @@ async function initializeServices() {
 function handleAppCleanup() {
   console.log('🧹 Cleaning up services...');
   
-  if (global.extractionService) {
-    global.extractionService.cleanup();
+  if (global.gameExtractionService) {
+    global.gameExtractionService.cleanup();
   }
   
   if (global.launcherService) {

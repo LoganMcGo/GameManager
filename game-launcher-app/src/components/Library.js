@@ -42,7 +42,6 @@ function Library({ onGameSelect }) {
   useEffect(() => {
     if (isAuthenticated) {
       // Only do initial check, no polling
-      console.log('🔐 Authentication detected, checking Real-Debrid downloads...');
       checkRealDebridDownloads();
       checkActiveDownloads();
       checkRunningGames();
@@ -83,14 +82,12 @@ function Library({ onGameSelect }) {
       
       // Immediate installation check when download completes
       if (download.status === 'complete' || download.status === 'extraction_complete') {
-        console.log('🚀 Download completed, checking installation status immediately...');
         setTimeout(() => checkInstalledGames(), 500); // Small delay to ensure files are ready
       }
     });
 
     // Listen for game closure events
     const unsubscribeGameClosed = window.api.launcher.onGameClosed((gameData) => {
-      console.log(`🛑 Game closed notification received: ${gameData.gameName}`);
       setRunningGames(prev => {
         const newSet = new Set(prev);
         newSet.delete(gameData.gameId);
@@ -119,7 +116,6 @@ function Library({ onGameSelect }) {
     };
 
     // Initial checks when library loads
-    console.log('📚 Library loaded, performing initial status check...');
     checkInstalledGames();
     checkActiveDownloads();
     checkRunningGames();
@@ -144,7 +140,6 @@ function Library({ onGameSelect }) {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (!document.hidden && library.length > 0) {
-        console.log('🔄 Library became visible, refreshing immediately...');
         // Immediate checks for better responsiveness
         setTimeout(() => {
           checkInstalledGames();
@@ -155,7 +150,6 @@ function Library({ onGameSelect }) {
     };
 
     const handleNavigationRefresh = () => {
-      console.log('🔄 Navigation to library detected, refreshing immediately...');
       // Immediate checks for better responsiveness
       setTimeout(() => {
         checkInstalledGames();
@@ -168,7 +162,6 @@ function Library({ onGameSelect }) {
       // F5 or Ctrl+R to force refresh library status
       if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
         e.preventDefault();
-        console.log('🔄 Manual library refresh triggered (F5/Ctrl+R)');
         checkInstalledGames();
         checkActiveDownloads();
         checkRunningGames();
@@ -192,7 +185,6 @@ function Library({ onGameSelect }) {
   const checkInstalledGames = async () => {
     // Prevent multiple concurrent checks
     if (isCheckingInstalled) {
-      console.log('🚫 Installation check already in progress, skipping...');
       return;
     }
     
@@ -257,14 +249,6 @@ function Library({ onGameSelect }) {
     try {
       const runningGameIds = await window.api.launcher.getRunningGames();
       const newRunningGames = new Set(runningGameIds);
-      
-      // Check if any previously running games have stopped
-      const currentRunning = runningGames;
-      const stoppedGames = [...currentRunning].filter(gameId => !newRunningGames.has(gameId));
-      
-      if (stoppedGames.length > 0) {
-        console.log('🛑 Detected externally stopped games:', stoppedGames);
-      }
       
       setRunningGames(newRunningGames);
     } catch (error) {
@@ -355,12 +339,10 @@ function Library({ onGameSelect }) {
     if (currentTime - lastUpdate < 2000) {
       const existingStatus = gameStatuses.get(gameId);
       if (existingStatus && existingStatus.status === newStatus.status) {
-        console.log(`🚫 Debounced status update for ${gameId} from ${source}`);
         return;
       }
     }
     
-    console.log(`✅ Updating status for ${gameId} to ${newStatus.status} from ${source}`);
     setStatusUpdateDebounce(prev => new Map(prev).set(gameId, currentTime));
     
     setGameStatuses(prev => {
@@ -439,10 +421,8 @@ function Library({ onGameSelect }) {
       case 'running':
         // Stop the game
         try {
-          console.log('Stopping game:', game.name);
           const result = await window.api.launcher.stopGame(game.appId);
           if (result.success) {
-            console.log('Game stopped successfully');
             setRunningGames(prev => {
               const newSet = new Set(prev);
               newSet.delete(game.appId);
@@ -450,8 +430,6 @@ function Library({ onGameSelect }) {
             });
             // Force immediate status update
             checkRunningGames();
-          } else {
-            console.error('Failed to stop game:', result.error);
           }
         } catch (error) {
           console.error('Error stopping game:', error);
@@ -462,8 +440,6 @@ function Library({ onGameSelect }) {
       case 'ready_to_play':
         // Launch game - try tracked executable first, then fallback to old method
         try {
-          console.log('Launching game:', game.name);
-          
           let gameInfo = {
             gameId: game.appId,
             gameName: game.name
@@ -483,14 +459,11 @@ function Library({ onGameSelect }) {
           
           const result = await window.api.launcher.launchGame(gameInfo);
           if (result.success) {
-            console.log('Game launched successfully');
             setRunningGames(prev => new Set(prev).add(game.appId));
             // Force immediate status update without delay
             checkRunningGames();
           } else if (result.needsManualSetup) {
             await handleExecutableSelection(game, gameInfo);
-          } else {
-            console.error('Failed to launch game:', result.error);
           }
         } catch (error) {
           console.error('Error launching game:', error);
@@ -498,14 +471,84 @@ function Library({ onGameSelect }) {
         break;
         
       case 'needs_setup':
-        // Setup game with manual executable selection (including repack installation)
+        // Handle repack installation or manual executable selection
         try {
-          const gameInfo = {
-            gameId: game.appId,
-            gameName: game.name,
-            gameDirectory: trackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
-          };
-          await handleExecutableSelection(game, gameInfo);
+          // First, let's refresh our download tracker data to make sure we have the latest info
+          await checkActiveDownloads();
+          
+          // Get fresh tracked status after refresh
+          const freshTrackedStatus = gameStatuses.get(game.appId);
+          console.log('🔄 Fresh tracked status after refresh:', freshTrackedStatus);
+          
+          // First, let's check if there are any repack downloads for this game in the download tracker
+          const allDownloads = await window.api.downloadTracker.getDownloads();
+          const gameDownloads = allDownloads.filter(d => 
+            (d.gameName === game.name || d.gameId === game.appId) && 
+            d.isRepack && 
+            d.status === 'complete'
+          );
+          console.log('📋 Repack downloads for this game:', gameDownloads);
+          
+          // Check if this is a repack that needs installation (either from tracked status OR download tracker)
+          const repackDownload = gameDownloads.length > 0 ? gameDownloads[0] : null;
+          const hasRepackInfo = (freshTrackedStatus?.isRepack && freshTrackedStatus?.tempExtractionPath) || repackDownload;
+          
+          if (hasRepackInfo) {
+            console.log('🔄 Handling repack installation for:', game.name);
+            
+            // Use temp extraction path from either tracked status or download tracker
+            const tempExtractionPath = freshTrackedStatus?.tempExtractionPath || repackDownload?.tempExtractionPath;
+            const repackType = freshTrackedStatus?.repackType || repackDownload?.repackType || 'Game Repack';
+            
+            console.log('📁 Temp extraction path:', tempExtractionPath);
+            console.log('📦 Repack type:', repackType);
+            console.log('📊 Source:', freshTrackedStatus?.tempExtractionPath ? 'tracked status' : 'download tracker');
+            
+            if (!tempExtractionPath) {
+              console.error('❌ No temp extraction path found for repack');
+              // Fall through to regular setup
+            } else {
+              // This is a repack - handle installation flow
+              const repackInfo = {
+                repackType: repackType,
+                installer: tempExtractionPath,
+                installInstructions: [
+                  'This is a repack that needs to be installed before playing.',
+                  'Follow the installation wizard to complete setup.',
+                  'Install to the download directory for automatic detection.'
+                ]
+              };
+              
+              await handleRepackInstallation(game, {
+                gameId: game.appId,
+                gameName: game.name,
+                gameDirectory: tempExtractionPath
+              }, repackInfo);
+              return; // Exit early to avoid regular setup
+            }
+          }
+          
+          if (freshTrackedStatus?.isRepack) {
+  
+            console.log('Fresh tracked status:', freshTrackedStatus);
+            
+            // Let's check if there are any downloads for this game
+            const allDownloads = await window.api.downloadTracker.getDownloads();
+            const gameDownloads = allDownloads.filter(d => d.gameName === game.name || d.gameId === game.appId);
+            console.log('📋 Downloads for this repack game:', gameDownloads);
+          } else {
+            console.log('🔧 Handling as regular game setup');
+            console.log('   freshTrackedStatus.isRepack:', freshTrackedStatus?.isRepack);
+            console.log('   freshTrackedStatus.tempExtractionPath:', freshTrackedStatus?.tempExtractionPath);
+            
+            // Regular game setup - look for executable in download directory  
+            const gameInfo = {
+              gameId: game.appId,
+              gameName: game.name,
+              gameDirectory: freshTrackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
+            };
+            await handleExecutableSelection(game, gameInfo);
+          }
         } catch (error) {
           console.error('Error setting up game:', error);
         }
@@ -670,14 +713,14 @@ function Library({ onGameSelect }) {
               color: 'text-green-400', 
               action: 'Play'
             };
-          } else if (gameStatus.needsManualSetup) {
+          } else if (gameStatus.needsManualSetup && gameStatus.isRepack) {
             return { 
               status: 'needs_setup', 
               text: '⚙️ Needs Setup', 
               color: 'text-purple-400', 
               action: 'Setup'
             };
-          } else if (gameStatus.isRepack && gameStatus.needsInstallation) {
+          } else if (gameStatus.needsManualSetup) {
             return { 
               status: 'needs_setup', 
               text: '⚙️ Needs Setup', 
@@ -849,7 +892,6 @@ function Library({ onGameSelect }) {
       const downloadLocation = await window.api.download.getDownloadLocation();
       
       const result = await window.api.launcher.runRepackInstaller({
-        installerPath: repackInfo.installer,
         gameId: repackGameInfo.game.appId,
         gameName: repackGameInfo.game.name,
         repackType: repackInfo.repackType,
@@ -857,68 +899,158 @@ function Library({ onGameSelect }) {
       });
       
       if (result.success) {
-        console.log('Installer launched successfully');
         setShowRepackModal(false);
         
         // Start polling for installation completion - check download location specifically
         startInstallationPolling(repackGameInfo.game, downloadLocation);
       } else {
-        console.error('Failed to launch installer:', result.error);
+        // Show error to user
+        if (notifications?.showNotification) {
+          notifications.showNotification({
+            id: 'repack-install-error',
+            title: 'Installation Error',
+            message: result.error || 'Failed to launch the repack installer.',
+            type: 'error',
+            duration: 8000
+          });
+        }
       }
     } catch (error) {
       console.error('Error running installer:', error);
+      
+      // Show error to user
+      if (notifications?.showNotification) {
+        notifications.showNotification({
+          id: 'repack-install-error',
+          title: 'Installation Error', 
+          message: 'An unexpected error occurred while launching the installer.',
+          type: 'error',
+          duration: 8000
+        });
+      }
     } finally {
       setIsInstallingRepack(false);
     }
   };
 
-  // Poll for installation completion
+  // Poll for installation completion - check download directory
   const startInstallationPolling = (game, downloadLocation) => {
-    console.log(`Starting installation polling for ${game.name} in ${downloadLocation}`);
+    let pollAttempts = 0;
+    const maxPollAttempts = 120; // 10 minutes (5 second intervals)
     
     const pollInterval = setInterval(async () => {
+      pollAttempts++;
+      
       try {
-        // Check specifically in the download location
-        const gameDirectory = `${downloadLocation}/${game.name.replace(/[<>:"/\\|?*]/g, '_')}`;
+        // Check if a folder with the game name exists in the download directory
+        const gameFolderPath = `${downloadLocation}\\${game.name.replace(/[<>:"/\\|?*]/g, '_')}`;
+        const folderExists = await window.api.download.checkPathExists(gameFolderPath);
         
-        const checkResult = await window.api.launcher.findExecutable({
-          gameId: game.appId,
-          gameName: game.name,
-          gameDirectory: gameDirectory
-        });
-        
-        if (checkResult.success && checkResult.executablePath) {
-          console.log(`Installation detected for ${game.name}!`);
+        if (folderExists) {
           clearInterval(pollInterval);
           
-          // Update the game status
-          setGameStatuses(prev => {
-            const newMap = new Map(prev);
-            newMap.set(game.appId, {
-              status: 'complete',
-              gameDirectory: gameDirectory,
-              executablePath: checkResult.executablePath,
-              needsManualSetup: false
-            });
-            return newMap;
+          // Try to find executable in the installation directory
+          const executableResult = await window.api.launcher.findGameExecutable({
+            gameId: game.appId,
+            gameName: game.name,
+            gameDirectory: gameFolderPath
           });
           
-          // Add to installed games
-          setInstalledGames(prev => new Set(prev).add(game.appId));
+          if (executableResult.success) {
+            // Add the installed game to the launcher
+            await window.api.launcher.addInstalledGame({
+              gameId: game.appId,
+              gameName: game.name,
+              installPath: gameFolderPath,
+              executablePath: executableResult.executablePath
+            });
+            
+            // Clean up temp files for this repack
+            await cleanupRepackTempFiles(game.appId, game.name);
+            
+            // Update the game status
+            setGameStatuses(prev => {
+              const newMap = new Map(prev);
+              newMap.set(game.appId, {
+                status: 'complete',
+                gameDirectory: gameFolderPath,
+                executablePath: executableResult.executablePath,
+                needsManualSetup: false
+              });
+              return newMap;
+            });
+            
+            // Add to installed games
+            setInstalledGames(prev => new Set(prev).add(game.appId));
+            
+            // Refresh the library to show the installed game
+            await loadLibrary();
+            
+            // Show success notification
+            notifications.showNotification({
+              id: 'repack-install-success',
+              title: 'Installation Complete!',
+              message: `${game.name} has been successfully installed and added to your library.`,
+              type: 'success',
+              duration: 5000
+            });
+          } else {
+            console.warn('Installation folder found but no executable detected');
+            // Still mark as success but user may need to manually set executable
+            await window.api.launcher.addInstalledGame({
+              gameId: game.appId,
+              gameName: game.name,
+              installPath: gameFolderPath,
+              executablePath: null
+            });
+            
+            await loadLibrary();
+            
+            notifications.showNotification({
+              id: 'repack-install-partial',
+              title: 'Installation Detected',
+              message: `${game.name} installation folder found. You may need to manually select the game executable in settings.`,
+              type: 'warning',
+              duration: 8000
+            });
+          }
           
-          // Show success notification
-          console.log(`${game.name} has been successfully installed and is ready to play!`);
+          return;
         }
+        
+        if (pollAttempts >= maxPollAttempts) {
+          clearInterval(pollInterval);
+          
+          notifications.showNotification({
+            id: 'repack-install-timeout',
+            title: 'Installation Check Timeout',
+            message: `Couldn't automatically detect the installation of ${game.name}. You may need to add it manually if the installation completed.`,
+            type: 'warning',
+            duration: 8000
+          });
+        }
+        
       } catch (error) {
-        console.error('Error polling for installation:', error);
+        console.error('Polling error:', error);
+        if (pollAttempts >= maxPollAttempts) {
+          clearInterval(pollInterval);
+        }
       }
-    }, 10000); // Check every 10 seconds
-    
-    // Stop polling after 30 minutes
-    setTimeout(() => {
-      clearInterval(pollInterval);
-      console.log(`Stopped polling for ${game.name} installation after 30 minutes`);
-    }, 30 * 60 * 1000);
+    }, 5000); // Check every 5 seconds
+  };
+
+  // Clean up temporary repack files after successful installation
+  const cleanupRepackTempFiles = async (gameId, gameName) => {
+    try {
+      // Remove the temp extraction folder
+      const result = await window.api.extraction.cleanupRepackTempFiles(gameId, gameName);
+      
+      if (result.success) {
+        // Temp files cleaned up successfully
+      }
+    } catch (error) {
+      // Error during temp file cleanup
+    }
   };
 
   if (selectedGame) {
@@ -1426,7 +1558,7 @@ function Library({ onGameSelect }) {
           </div>
         ) : (
           <div className={viewMode === 'grid' 
-            ? "grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3 sm:gap-4 auto-rows-max"
+            ? "grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3 sm:gap-4 auto-rows-max pt-2"
             : "space-y-2"
           }>
           {filteredGames.map((game) => {

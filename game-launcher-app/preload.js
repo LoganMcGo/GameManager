@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld(
       setDownloadLocation: (path) => ipcRenderer.invoke('download:set-location', path),
       openDownloadLocation: () => ipcRenderer.invoke('download:open-location'),
       startWithExtraction: (downloadInfo) => ipcRenderer.invoke('download:start-with-extraction', downloadInfo),
+      checkPathExists: (path) => ipcRenderer.invoke('download:check-path-exists', path),
       onDownloadUpdate: (callback) => {
         const wrappedCallback = (event, ...args) => callback(...args);
         ipcRenderer.on('download:update', wrappedCallback);
@@ -144,7 +145,8 @@ contextBridge.exposeInMainWorld(
       cancel: (extractionId) => ipcRenderer.invoke('extraction:cancel', extractionId),
       needsExtraction: (filePath) => ipcRenderer.invoke('extraction:needs-extraction', filePath),
       installGame: (installInfo) => ipcRenderer.invoke('extraction:install-game', installInfo),
-      cleanTemp: () => ipcRenderer.invoke('extraction:clean-temp')
+      cleanTemp: () => ipcRenderer.invoke('extraction:clean-temp'),
+      cleanupRepackTempFiles: (gameId, gameName) => ipcRenderer.invoke('extraction:cleanup-repack-temp-files', gameId, gameName)
     },
     
     // JWT Service API

@@ -298,57 +298,61 @@ function GameDownloadsManager({ onGameSelect }) {
                       {getLoadingDots(download.status)}
                     </div>
 
-                    {/* Progress Bar */}
-                    {(download.status === 'downloading' || 
-                      download.status === 'torrent_downloading' ||
-                      download.status === 'extracting' ||
-                      download.status === 'download_complete' ||
-                      download.status === 'extraction_complete') && (
-                      <div className="mb-3">
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="text-xs text-gray-400">
-                            {download.status === 'extracting' 
-                              ? 'Extracting...'
-                              : download.status === 'download_complete'
-                              ? 'Download Complete - Starting Extraction...'
-                              : download.status === 'extraction_complete'
-                              ? 'Extraction Complete - Setting up game...'
-                              : `${download.progress.toFixed(1)}%`
-                            }
-                          </span>
-                          <div className="text-xs text-gray-400 space-x-2">
-                            {download.downloadedBytes > 0 && download.status === 'downloading' && (
-                              <span>{formatFileSize(download.downloadedBytes)}</span>
-                            )}
-                            {download.totalBytes > 0 && download.status === 'downloading' && (
-                              <span>/ {formatFileSize(download.totalBytes)}</span>
-                            )}
-                            {download.downloadSpeed > 0 && download.status === 'downloading' && (
-                              <span>• {formatSpeed(download.downloadSpeed)}</span>
-                            )}
+                    {/* Progress Bar Area - Always takes same space */}
+                    <div className="mb-3 h-12">
+                      {(download.status === 'downloading' || 
+                        download.status === 'torrent_downloading' ||
+                        download.status === 'extracting' ||
+                        download.status === 'download_complete' ||
+                        download.status === 'extraction_complete') ? (
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs text-gray-400">
+                              {download.status === 'extracting' 
+                                ? 'Extracting...'
+                                : download.status === 'download_complete'
+                                ? 'Download Complete - Starting Extraction...'
+                                : download.status === 'extraction_complete'
+                                ? 'Extraction Complete - Setting up game...'
+                                : `${download.progress.toFixed(1)}%`
+                              }
+                            </span>
+                            <div className="text-xs text-gray-400 space-x-2">
+                              {download.downloadedBytes > 0 && download.status === 'downloading' && (
+                                <span>{formatFileSize(download.downloadedBytes)}</span>
+                              )}
+                              {download.totalBytes > 0 && download.status === 'downloading' && (
+                                <span>/ {formatFileSize(download.totalBytes)}</span>
+                              )}
+                              {download.downloadSpeed > 0 && download.status === 'downloading' && (
+                                <span>• {formatSpeed(download.downloadSpeed)}</span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                        <div className="w-full bg-gray-700 rounded-full h-2">
-                          <div
-                            className={`h-2 rounded-full transition-all duration-300 ${getProgressColor(download.status)}`}
-                            style={{ 
-                              width: `${Math.min(100, Math.max(0, 
-                                download.status === 'extracting' 
-                                  ? 100
-                                  : download.status === 'download_complete' || download.status === 'extraction_complete'
-                                  ? 100
-                                  : download.progress
-                              ))}%` 
-                            }}
-                          ></div>
-                        </div>
-                        {download.status === 'extracting' && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Extracting game files to final location...
+                          <div className="w-full bg-gray-700 rounded-full h-2">
+                            <div
+                              className={`h-2 rounded-full transition-all duration-300 ${getProgressColor(download.status)}`}
+                              style={{ 
+                                width: `${Math.min(100, Math.max(0, 
+                                  download.status === 'extracting' 
+                                    ? 100
+                                    : download.status === 'download_complete' || download.status === 'extraction_complete'
+                                    ? 100
+                                    : download.progress
+                                ))}%` 
+                              }}
+                            ></div>
                           </div>
-                        )}
-                      </div>
-                    )}
+                          {download.status === 'extracting' && (
+                            <div className="text-xs text-gray-500 mt-1">
+                              Extracting game files to final location...
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div></div>
+                      )}
+                    </div>
 
                     {/* Error Message */}
                     {download.status === 'error' && download.error && (

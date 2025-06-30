@@ -62,6 +62,11 @@ class GameExtractionService {
     ipcMain.handle('extraction:clean-temp', async () => {
       return await this.cleanTempDirectory();
     });
+
+    // Clean up repack temp files
+    ipcMain.handle('extraction:cleanup-repack-temp-files', async (event, gameId, gameName) => {
+      return await this.cleanupRepackTempFiles(gameId, gameName);
+    });
   }
 
   needsExtraction(filePath) {
@@ -623,6 +628,56 @@ class GameExtractionService {
     } catch (error) {
       console.error('Error cleaning temp directory:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  async cleanupRepackTempFiles(gameId, gameName) {
+    try {
+      console.log(`🧹 Cleaning up repack temp files for: ${gameName}`);
+      
+      // Get the download tracker to find the temp extraction path
+      const Store = require('electron-store');
+      const downloadStore = new Store({
+        name: 'game-downloads',
+        defaults: { downloads: {} }
+      });
+      
+      const downloads = downloadStore.get('downloads', {});
+      const download = Object.values(downloads).find(d => 
+        (d.gameId === gameId || d.gameName === gameName) && d.isRepack && d.tempExtractionPath
+      );
+      
+      if (!download || !download.tempExtractionPath) {
+        console.log(`No temp extraction path found for repack: ${gameName}`);
+        return { success: true, message: 'No temp files to clean up' };
+      }
+      
+      const tempPath = download.tempExtractionPath;
+      console.log(`🗑️ Removing temp extraction folder: ${tempPath}`);
+      
+      if (fs.existsSync(tempPath)) {
+        await this.deleteTempDirectory(tempPath);
+        console.log(`✅ Successfully removed temp folder: ${tempPath}`);
+      } else {
+        console.log(`Temp folder already removed: ${tempPath}`);
+      }
+      
+      // Remove the download tracking entry since it's no longer needed
+      delete downloads[download.id];
+      downloadStore.set('downloads', downloads);
+      
+      return {
+        success: true,
+        message: `Cleaned up temp files for ${gameName}`,
+        cleanedPath: tempPath
+      };
+      
+    } catch (error) {
+      console.error(`Error cleaning up repack temp files for ${gameName}:`, error);
+      return {
+        success: false,
+        error: error.message
+      };
     }
   }
 

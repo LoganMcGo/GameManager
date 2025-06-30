@@ -37,6 +37,11 @@ class GameLauncherService {
       return await this.findGameExecutable(gameInfo);
     });
 
+    // Find game executable (alternative handler name)
+    ipcMain.handle('launcher:find-game-executable', async (event, gameInfo) => {
+      return await this.findGameExecutable(gameInfo);
+    });
+
     // Scan for game executables in directory
     ipcMain.handle('launcher:scan-directory', async (event, directoryPath) => {
       return await this.scanDirectoryForExecutables(directoryPath);
@@ -86,9 +91,6 @@ class GameLauncherService {
   async launchGame(gameInfo) {
     try {
       const { gameId, gameName, gameDirectory } = gameInfo;
-      
-      console.log(`🎮 Launching game: ${gameName}`);
-      console.log(`📁 Game directory: ${gameDirectory}`);
 
       // Check if game is already running
       if (this.runningGames.has(gameId)) {
@@ -114,9 +116,6 @@ class GameLauncherService {
       const executablePath = executableInfo.executablePath;
       const workingDirectory = path.dirname(executablePath);
 
-      console.log(`🚀 Launching executable: ${executablePath}`);
-      console.log(`📁 Working directory: ${workingDirectory}`);
-
       // Launch the game
       const gameProcess = spawn(executablePath, [], {
         cwd: workingDirectory,
@@ -140,14 +139,13 @@ class GameLauncherService {
 
       // Handle process events
       gameProcess.on('exit', (code, signal) => {
-        console.log(`🛑 Game exited: ${gameName} (PID: ${gameProcess.pid})`);
         this.runningGames.delete(gameId);
         // Notify UI immediately when process exits
         this.notifyGameClosed(gameId, gameName);
       });
 
       gameProcess.on('error', (error) => {
-        console.error(`❌ Game process error: ${gameName}`, error);
+        console.error(`Game process error: ${gameName}`, error);
         this.runningGames.delete(gameId);
         // Notify UI about process error
         this.notifyGameClosed(gameId, gameName);
@@ -155,8 +153,6 @@ class GameLauncherService {
 
       // Unref to allow the main process to exit
       gameProcess.unref();
-
-      console.log(`✅ Game launched successfully: ${gameName} (PID: ${gameProcess.pid})`);
       
       return {
         success: true,
@@ -166,7 +162,7 @@ class GameLauncherService {
       };
 
     } catch (error) {
-      console.error(`❌ Error launching game:`, error);
+      console.error(`Error launching game:`, error);
       return {
         success: false,
         error: error.message
@@ -184,8 +180,6 @@ class GameLauncherService {
           error: 'Game is not running'
         };
       }
-
-      console.log(`🛑 Stopping game: ${gameProcess.gameName} (PID: ${gameProcess.pid})`);
 
       // Try to gracefully terminate the process
       try {
@@ -220,7 +214,7 @@ class GameLauncherService {
       };
 
     } catch (error) {
-      console.error(`❌ Error stopping game:`, error);
+      console.error(`Error stopping game:`, error);
       return {
         success: false,
         error: error.message
@@ -273,8 +267,6 @@ class GameLauncherService {
           error: `Game directory does not exist: ${gameDirectory}`
         };
       }
-
-      console.log(`🔍 Searching for executable in: ${gameDirectory}`);
 
       // Get all executable files in the directory
       const executables = await this.scanDirectoryForExecutables(gameDirectory);
@@ -642,9 +634,6 @@ class GameLauncherService {
     try {
       const { gameId, gameName, gameDirectory } = gameInfo;
       
-      console.log(`🗑️ Starting uninstall for: ${gameName}`);
-      console.log(`📁 Game directory: ${gameDirectory}`);
-
       // Check if directory exists
       if (!fs.existsSync(gameDirectory)) {
         return {
@@ -658,8 +647,6 @@ class GameLauncherService {
       const uninstallerPath = await this.findUninstaller(gameDirectory);
       
       if (uninstallerPath) {
-        console.log(`🔧 Found uninstaller: ${uninstallerPath}`);
-        
         try {
           // Run the uninstaller
           await this.runUninstaller(uninstallerPath);
@@ -669,7 +656,6 @@ class GameLauncherService {
           
           // Check if directory still exists (some uninstallers might leave it)
           if (fs.existsSync(gameDirectory)) {
-            console.log(`📁 Directory still exists after uninstaller, removing manually...`);
             await this.removeDirectory(gameDirectory);
           }
           
@@ -686,7 +672,6 @@ class GameLauncherService {
       }
 
       // If no uninstaller found or uninstaller failed, remove the directory manually
-      console.log(`🗑️ Removing game directory manually: ${gameDirectory}`);
       await this.removeDirectory(gameDirectory);
       
       // Remove from cache if exists
@@ -701,7 +686,7 @@ class GameLauncherService {
       };
 
     } catch (error) {
-      console.error(`❌ Error uninstalling game:`, error);
+      console.error(`Error uninstalling game:`, error);
       return {
         success: false,
         error: error.message
@@ -757,8 +742,6 @@ class GameLauncherService {
 
   async runUninstaller(uninstallerPath) {
     return new Promise((resolve, reject) => {
-      console.log(`🔧 Running uninstaller: ${uninstallerPath}`);
-      
       // Run uninstaller with silent flags (most common ones)
       const uninstallerProcess = spawn(uninstallerPath, ['/S', '/SILENT', '/VERYSILENT'], {
         cwd: path.dirname(uninstallerPath),
@@ -774,13 +757,12 @@ class GameLauncherService {
 
       uninstallerProcess.on('exit', (code, signal) => {
         clearTimeout(timeout);
-        console.log(`🔧 Uninstaller exited with code: ${code}`);
         resolve();
       });
 
       uninstallerProcess.on('error', (error) => {
         clearTimeout(timeout);
-        console.error(`❌ Uninstaller error:`, error);
+        console.error(`Uninstaller error:`, error);
         reject(error);
       });
     });
@@ -792,10 +774,9 @@ class GameLauncherService {
         // Use rmdir /s on Windows for better compatibility
         exec(`rmdir /s /q "${directoryPath}"`, (error, stdout, stderr) => {
           if (error) {
-            console.error(`❌ Error removing directory:`, error);
+            console.error(`Error removing directory:`, error);
             reject(error);
           } else {
-            console.log(`✅ Directory removed: ${directoryPath}`);
             resolve();
           }
         });
@@ -803,10 +784,9 @@ class GameLauncherService {
         // Use rm -rf on Unix-like systems
         exec(`rm -rf "${directoryPath}"`, (error, stdout, stderr) => {
           if (error) {
-            console.error(`❌ Error removing directory:`, error);
+            console.error(`Error removing directory:`, error);
             reject(error);
           } else {
-            console.log(`✅ Directory removed: ${directoryPath}`);
             resolve();
           }
         });
@@ -850,7 +830,6 @@ class GameLauncherService {
       }
       
       if (!processRunning) {
-        console.log(`🛑 Detected external game exit: ${gameProcess.gameName} (PID: ${gameProcess.pid})`);
         this.runningGames.delete(gameId);
         
         // Notify UI about game closure
@@ -871,16 +850,12 @@ class GameLauncherService {
       });
     }
     
-    console.log(`📢 Notified UI about game closure: ${gameName}`);
   }
 
   cleanup() {
     // Stop all running games
-    console.log('🧹 Cleaning up game launcher service...');
-    
     for (const [gameId, gameProcess] of this.runningGames.entries()) {
       try {
-        console.log(`🛑 Stopping game: ${gameProcess.gameName}`);
         this.stopGame(gameId);
       } catch (error) {
         console.warn(`Warning: Failed to stop game ${gameId}:`, error.message);
@@ -894,15 +869,22 @@ class GameLauncherService {
   // Run repack installer with user guidance
   async runRepackInstaller(installerInfo) {
     try {
-      const { installerPath, gameId, gameName, repackType } = installerInfo;
+      const { gameId, gameName, repackType, downloadLocation } = installerInfo;
       
-      console.log(`🔨 Running ${repackType} installer for: ${gameName}`);
-      console.log(`📁 Installer path: ${installerPath}`);
+      // Find the setup.exe in the temp extraction folder
+      const setupPath = await this.findRepackSetupExecutable(gameId, gameName);
       
-      if (!fs.existsSync(installerPath)) {
+      if (!setupPath) {
         return {
           success: false,
-          error: 'Installer executable not found'
+          error: 'Setup.exe not found in extracted repack files. The extraction may have failed or the repack format is not supported.'
+        };
+      }
+      
+      if (!fs.existsSync(setupPath)) {
+        return {
+          success: false,
+          error: 'Setup executable not found'
         };
       }
       
@@ -910,10 +892,8 @@ class GameLauncherService {
       const { exec } = require('child_process');
       
       // Quote the path to handle spaces and special characters
-      const quotedPath = `"${installerPath}"`;
-      const workingDir = path.dirname(installerPath);
-      
-      console.log(`🚀 Executing: ${quotedPath} in directory: ${workingDir}`);
+      const quotedPath = `"${setupPath}"`;
+      const workingDir = path.dirname(setupPath);
       
       // Launch the installer using exec with shell=true for better Windows compatibility
       const installerProcess = exec(quotedPath, {
@@ -921,12 +901,11 @@ class GameLauncherService {
         windowsHide: false // Show the installer window
       });
       
-      console.log(`✅ Installer launched for ${gameName} (PID: ${installerProcess.pid})`);
-      
       return {
         success: true,
-        message: `${repackType} installer has been launched. Please follow the installation wizard.`,
-        installerPid: installerProcess.pid
+        message: `${repackType} installer has been launched. Please follow the installation wizard and install to ${downloadLocation}.`,
+        installerPid: installerProcess.pid,
+        setupPath: setupPath
       };
       
     } catch (error) {
@@ -935,6 +914,96 @@ class GameLauncherService {
         success: false,
         error: error.message
       };
+    }
+  }
+
+  // Find setup.exe in the temp extraction folder for a repack
+  async findRepackSetupExecutable(gameId, gameName) {
+    try {
+      // Get the download tracker to find the temp extraction path
+      const Store = require('electron-store');
+      const downloadStore = new Store({
+        name: 'game-downloads',
+        defaults: { downloads: {} }
+      });
+      
+      const downloads = downloadStore.get('downloads', {});
+      const download = Object.values(downloads).find(d => 
+        (d.gameId === gameId || d.gameName === gameName) && d.isRepack && d.tempExtractionPath
+      );
+      
+      if (!download || !download.tempExtractionPath) {
+        console.error(`No temp extraction path found for repack: ${gameName}`);
+        return null;
+      }
+      
+      const tempPath = download.tempExtractionPath;
+      
+      if (!fs.existsSync(tempPath)) {
+        console.error(`Temp extraction path does not exist: ${tempPath}`);
+        return null;
+      }
+      
+      // Search for setup executables
+      const setupExecutables = await this.findSetupExecutables(tempPath);
+      
+      if (setupExecutables.length === 0) {
+        console.error(`No setup executables found in: ${tempPath}`);
+        return null;
+      }
+      
+      // Return the first (and usually only) setup executable
+      return setupExecutables[0];
+      
+    } catch (error) {
+      console.error('Error finding repack setup executable:', error);
+      return null;
+    }
+  }
+
+  // Find setup executables in a directory
+  async findSetupExecutables(directory) {
+    try {
+      const setupExecutables = [];
+      
+      const scanDirectory = (dir, depth = 0) => {
+        if (depth > 3) return; // Limit search depth
+        
+        const items = fs.readdirSync(dir);
+        
+        for (const item of items) {
+          const itemPath = path.join(dir, item);
+          const stat = fs.statSync(itemPath);
+          
+          if (stat.isFile()) {
+            const fileName = item.toLowerCase();
+            
+            // Look for setup executables
+            if ((fileName.includes('setup') || 
+                 fileName.includes('install') || 
+                 fileName === 'setup.exe' ||
+                 fileName === 'installer.exe') && fileName.endsWith('.exe')) {
+              setupExecutables.push(itemPath);
+            }
+          } else if (stat.isDirectory() && depth < 3) {
+            // Skip certain directories
+            const dirName = item.toLowerCase();
+            if (!dirName.includes('redist') && 
+                !dirName.includes('_commonredist') && 
+                !dirName.includes('directx') &&
+                !dirName.includes('__macosx')) {
+              scanDirectory(itemPath, depth + 1);
+            }
+          }
+        }
+      };
+      
+      scanDirectory(directory);
+      return setupExecutables;
+      
+    } catch (error) {
+      console.error('Error scanning for setup executables:', error);
+      return [];
     }
   }
 
@@ -953,12 +1022,8 @@ class GameLauncherService {
         `E:\\Games\\${gameName}`
       ];
       
-      console.log(`🔍 Checking for installed game: ${gameName}`);
-      
       for (const installPath of commonInstallPaths) {
         if (fs.existsSync(installPath)) {
-          console.log(`📁 Found potential installation at: ${installPath}`);
-          
           // Try to find executable in the installation directory
           const executables = await this.scanDirectoryForExecutables(installPath);
           const gameExecutables = executables.filter(exe => {
@@ -970,6 +1035,9 @@ class GameLauncherService {
           
           if (gameExecutables.length > 0) {
             const bestExecutable = this.findBestExecutable(gameExecutables, gameName);
+            
+            // Clean up temp files since installation is complete
+            await this.cleanupRepackTempFiles(gameId, gameName);
             
             return {
               success: true,
@@ -1002,12 +1070,13 @@ class GameLauncherService {
     try {
       const { gameId, gameName, installPath, executablePath } = gameInfo;
       
-      console.log(`➕ Adding installed game to library: ${gameName}`);
-      
       // Cache the executable path
       if (executablePath) {
         this.gameExecutables.set(gameId, executablePath);
       }
+      
+      // Clean up temp files for repack installations
+      await this.cleanupRepackTempFiles(gameId, gameName);
       
       // You might want to save this to a persistent store
       // For now, we'll just cache it in memory
@@ -1027,11 +1096,35 @@ class GameLauncherService {
       };
     }
   }
+
+  // Clean up repack temp files
+  async cleanupRepackTempFiles(gameId, gameName) {
+    try {
+      console.log(`🧹 Cleaning up repack temp files for: ${gameName}`);
+      
+      // Access the global GameExtractionService instance
+      const extractionService = global.gameExtractionService;
+      if (extractionService) {
+        const result = await extractionService.cleanupRepackTempFiles(gameId, gameName);
+        if (result.success) {
+          console.log(`✅ Successfully cleaned up temp files for ${gameName}`);
+        } else {
+          console.warn(`⚠️ Failed to clean up temp files for ${gameName}: ${result.error}`);
+        }
+        return result;
+      } else {
+        console.warn(`⚠️ GameExtractionService not available for cleanup`);
+        return { success: false, error: 'Extraction service not available' };
+      }
+    } catch (error) {
+      console.error(`❌ Error cleaning up repack temp files for ${gameName}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
 }
 
 // Initialize and export the service
 function initGameLauncherService() {
-  console.log('🎮 Initializing Game Launcher Service...');
   return new GameLauncherService();
 }
 
