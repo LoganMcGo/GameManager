@@ -207,7 +207,7 @@ function Library({ onGameSelect }) {
           const trackedStatus = gameStatuses.get(game.appId);
           
           // Skip games that are actively downloading/extracting to avoid conflicts
-          if (trackedStatus && ['downloading', 'extracting', 'download_complete', 'extraction_complete', 'needs_setup', 'finding_executable'].includes(trackedStatus.status)) {
+          if (trackedStatus && ['downloading', 'extracting', 'download_complete', 'extraction_complete', 'finding_executable'].includes(trackedStatus.status)) {
             continue;
           }
           
@@ -500,13 +500,10 @@ function Library({ onGameSelect }) {
       case 'needs_setup':
         // Setup game with manual executable selection (including repack installation)
         try {
-          // For repacks, use the temp extraction path instead of download directory
           const gameInfo = {
             gameId: game.appId,
             gameName: game.name,
-            gameDirectory: trackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`,
-            isRepack: trackedStatus?.isRepack || false,
-            tempDirectory: trackedStatus?.extractedPath || null
+            gameDirectory: trackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
           };
           await handleExecutableSelection(game, gameInfo);
         } catch (error) {
@@ -655,13 +652,6 @@ function Library({ onGameSelect }) {
             color: 'text-purple-300', 
             action: 'View Progress',
             progress: 100
-          };
-        case 'needs_setup':
-          return { 
-            status: 'needs_setup', 
-            text: '📦 Needs Setup', 
-            color: 'text-purple-400', 
-            action: 'Setup'
           };
         case 'finding_executable':
           return { 

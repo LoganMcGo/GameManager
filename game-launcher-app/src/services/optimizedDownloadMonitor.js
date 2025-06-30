@@ -372,19 +372,6 @@ class OptimizedDownloadMonitor extends EventEmitter {
         }
         break;
         
-      case 'needs_setup':
-        if (download.status !== 'needs_setup') {
-          updateData.status = 'needs_setup';
-          updateData.statusMessage = 'Needs Installation';
-          updateData.extractionProgress = 100;
-          updateData.progress = 100;
-          updateData.isRepack = localProgress.isRepack || false;
-          updateData.repackType = localProgress.repackType || null;
-          updateData.extractedPath = localProgress.extractedPath || null;
-          hasUpdate = true;
-        }
-        break;
-        
       case 'complete':
         if (download.status !== 'complete') {
           updateData.status = 'complete';

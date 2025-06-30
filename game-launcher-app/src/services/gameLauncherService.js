@@ -250,7 +250,7 @@ class GameLauncherService {
 
   async findGameExecutable(gameInfo) {
     try {
-      const { gameId, gameName, gameDirectory, isRepack, tempDirectory } = gameInfo;
+      const { gameId, gameName, gameDirectory } = gameInfo;
 
       // Check cache first
       if (this.gameExecutables.has(gameId)) {
@@ -267,31 +267,28 @@ class GameLauncherService {
         }
       }
 
-      // For repacks, check temp directory first
-      const searchDirectory = isRepack && tempDirectory ? tempDirectory : gameDirectory;
-
-      if (!fs.existsSync(searchDirectory)) {
+      if (!fs.existsSync(gameDirectory)) {
         return {
           success: false,
-          error: `Game directory does not exist: ${searchDirectory}`
+          error: `Game directory does not exist: ${gameDirectory}`
         };
       }
 
-      console.log(`🔍 Searching for executable in: ${searchDirectory}${isRepack ? ' (temp - repack)' : ''}`);
+      console.log(`🔍 Searching for executable in: ${gameDirectory}`);
 
       // Get all executable files in the directory
-      const executables = await this.scanDirectoryForExecutables(searchDirectory);
+      const executables = await this.scanDirectoryForExecutables(gameDirectory);
 
       if (executables.length === 0) {
         return {
           success: false,
           error: 'No executable files found in game directory',
-          scannedDirectory: searchDirectory
+          scannedDirectory: gameDirectory
         };
       }
 
       // Check if this appears to be a repack that needs installation
-      const repackInfo = this.detectRepack(executables, searchDirectory);
+      const repackInfo = this.detectRepack(executables, gameDirectory);
       if (repackInfo.isRepack) {
         return {
           success: false,
@@ -299,7 +296,7 @@ class GameLauncherService {
           isRepack: true,
           repackInfo: repackInfo,
           needsInstallation: true,
-          scannedDirectory: searchDirectory
+          scannedDirectory: gameDirectory
         };
       }
 
