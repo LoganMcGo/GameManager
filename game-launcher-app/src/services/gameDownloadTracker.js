@@ -6,7 +6,8 @@ const { getOptimizedMonitor } = require('./optimizedDownloadMonitor');
 const downloadStore = new Store({
   name: 'game-downloads',
   defaults: {
-    downloads: {}
+    downloads: {},
+    history: {}
   }
 });
 
@@ -65,12 +66,24 @@ function initGameDownloadTracker() {
   // Start optimized monitoring
   optimizedMonitor.startMonitoring();
   
+  // Start stuck download detection
+  startStuckDownloadMonitoring();
+  
   // Register IPC handlers
   ipcMain.handle('download-tracker:get-downloads', getTrackedDownloads);
   ipcMain.handle('download-tracker:remove-download', removeTrackedDownload);
   ipcMain.handle('download-tracker:clear-completed', clearCompletedDownloads);
   ipcMain.handle('download-tracker:start-tracking', handleStartTracking);
   ipcMain.handle('download-tracker:update-status', handleUpdateStatus);
+  
+  // History IPC handlers
+  ipcMain.handle('download-tracker:get-history', getDownloadHistory);
+  ipcMain.handle('download-tracker:clear-history', clearDownloadHistory);
+  ipcMain.handle('download-tracker:remove-history-item', removeHistoryItem);
+  ipcMain.handle('download-tracker:move-to-history', moveToHistory);
+  
+  // Cancel download IPC handler
+  ipcMain.handle('download-tracker:cancel-download', handleCancelDownload);
   
   // Add new IPC handlers for optimized monitoring
   ipcMain.handle('download-tracker:get-statistics', () => optimizedMonitor.getStatistics());
@@ -88,8 +101,6 @@ function handleUpdateStatus(event, downloadId, status, data) {
   updateDownloadStatus(downloadId, status, data);
   return { success: true };
 }
-
-
 
 // Start tracking a new game download
 function startTracking(gameData, magnetLink, torrentId = null, torrentName = null) {
@@ -167,6 +178,17 @@ function updateDownloadStatus(downloadId, status, data = {}) {
   // Save updates
   downloads[downloadId] = download;
   downloadStore.set('downloads', downloads);
+  
+  // Check if download should be moved to history automatically
+  const shouldMoveToHistory = (status === DOWNLOAD_STATUS.COMPLETE || status === DOWNLOAD_STATUS.ERROR) && 
+                              !download.isInHistory;
+  
+  if (shouldMoveToHistory) {
+    // Delay moving to history to allow UI to show completion state briefly
+    setTimeout(() => {
+      moveDownloadToHistory(downloadId);
+    }, 5000); // Move to history after 5 seconds
+  }
   
   // Emit update to UI
   const { BrowserWindow } = require('electron');
@@ -587,6 +609,359 @@ function getRepackType(torrentName) {
   return 'Compressed Release';
 }
 
+// History Management Functions
+
+// Move a download to history (internal function)
+function moveDownloadToHistory(downloadId) {
+  const downloads = downloadStore.get('downloads', {});
+  const history = downloadStore.get('history', {});
+  const download = downloads[downloadId];
+  
+  if (!download) {
+    console.warn(`Download ${downloadId} not found for history move`);
+    return;
+  }
+  
+  // Add completion timestamp and mark as historical
+  download.completedAt = Date.now();
+  download.isInHistory = true;
+  
+  // Ensure we preserve important fields for repacks
+  if (download.isRepack && download.tempExtractionPath) {
+    console.log(`📚 Preserving temp extraction path for ${download.gameName}: ${download.tempExtractionPath}`);
+  }
+  
+  // Move to history
+  history[downloadId] = download;
+  delete downloads[downloadId];
+  
+  // Save changes
+  downloadStore.set('downloads', downloads);
+  downloadStore.set('history', history);
+  
+  // Emit update to UI
+  const { BrowserWindow } = require('electron');
+  let mainWindow = global.mainWindow;
+  
+  if (!mainWindow) {
+    const allWindows = BrowserWindow.getAllWindows();
+    mainWindow = allWindows.find(win => !win.isDestroyed()) || allWindows[0];
+  }
+  
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('download-tracker:moved-to-history', download);
+    mainWindow.webContents.send('download-tracker:history-update', Object.values(history));
+  }
+  
+  console.log(`📚 Moved download to history: ${download.gameName}`);
+}
+
+// Get all history items
+function getDownloadHistory() {
+  const history = downloadStore.get('history', {});
+  return Object.values(history).sort((a, b) => (b.completedAt || b.lastUpdated) - (a.completedAt || a.lastUpdated));
+}
+
+// Clear all history
+function clearDownloadHistory() {
+  downloadStore.set('history', {});
+  
+  // Emit update to UI
+  const { BrowserWindow } = require('electron');
+  let mainWindow = global.mainWindow;
+  
+  if (!mainWindow) {
+    const allWindows = BrowserWindow.getAllWindows();
+    mainWindow = allWindows.find(win => !win.isDestroyed()) || allWindows[0];
+  }
+  
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('download-tracker:history-update', []);
+  }
+  
+  return { success: true };
+}
+
+// Remove a specific history item
+function removeHistoryItem(event, downloadId) {
+  const history = downloadStore.get('history', {});
+  delete history[downloadId];
+  downloadStore.set('history', history);
+  
+  // Emit update to UI
+  const { BrowserWindow } = require('electron');
+  let mainWindow = global.mainWindow;
+  
+  if (!mainWindow) {
+    const allWindows = BrowserWindow.getAllWindows();
+    mainWindow = allWindows.find(win => !win.isDestroyed()) || allWindows[0];
+  }
+  
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('download-tracker:history-update', Object.values(history));
+  }
+  
+  return { success: true };
+}
+
+// Manually move a download to history (IPC handler)
+function moveToHistory(event, downloadId) {
+  moveDownloadToHistory(downloadId);
+  return { success: true };
+}
+
+// IPC handler for canceling downloads
+async function handleCancelDownload(event, downloadId, reason = 'user_canceled') {
+  return await cancelDownload(downloadId, reason);
+}
+
+// Cancel a download and clean up all associated resources
+async function cancelDownload(downloadId, reason = 'user_canceled') {
+  try {
+    console.log(`🚫 Canceling download: ${downloadId}, reason: ${reason}`);
+    
+    const downloads = downloadStore.get('downloads', {});
+    const download = downloads[downloadId];
+    
+    if (!download) {
+      return { success: false, error: 'Download not found' };
+    }
+    
+    const gameName = download.gameName;
+    
+    // Step 1: Cancel local download if it exists
+    if (download.localDownloadId) {
+      try {
+        const downloadService = global.gameDownloadService;
+        if (downloadService) {
+          await downloadService.cancelDownload(download.localDownloadId);
+          console.log(`✅ Canceled local download: ${download.localDownloadId}`);
+        }
+      } catch (error) {
+        console.warn(`⚠️ Failed to cancel local download: ${error.message}`);
+      }
+    }
+    
+    // Step 2: Delete from Real-Debrid (both torrent and download if they exist)
+    const realDebridService = require('./realDebridService');
+    
+    // Delete torrent if it exists
+    if (download.torrentId) {
+      try {
+        const deleteTorrentResult = await realDebridService.deleteTorrent(download.torrentId);
+        if (deleteTorrentResult.success) {
+          console.log(`✅ Deleted torrent from Real-Debrid: ${download.torrentId}`);
+        } else {
+          console.warn(`⚠️ Failed to delete torrent: ${deleteTorrentResult.error}`);
+        }
+      } catch (error) {
+        console.warn(`⚠️ Error deleting torrent: ${error.message}`);
+      }
+    }
+    
+    // Delete download from Real-Debrid if it exists
+    if (download.realDebridDownloadId) {
+      try {
+        const deleteDownloadResult = await realDebridService.deleteDownload(download.realDebridDownloadId);
+        if (deleteDownloadResult.success) {
+          console.log(`✅ Deleted download from Real-Debrid: ${download.realDebridDownloadId}`);
+        } else {
+          console.warn(`⚠️ Failed to delete download: ${deleteDownloadResult.error}`);
+        }
+      } catch (error) {
+        console.warn(`⚠️ Error deleting download: ${error.message}`);
+      }
+    }
+    
+    // Step 3: Clean up temporary extraction files if they exist
+    if (download.tempExtractionPath) {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        
+        if (fs.existsSync(download.tempExtractionPath)) {
+          // Use recursive directory removal
+          if (process.platform === 'win32') {
+            const { exec } = require('child_process');
+            await new Promise((resolve) => {
+              exec(`rmdir /s /q "${download.tempExtractionPath}"`, () => resolve());
+            });
+          } else {
+            fs.rmSync(download.tempExtractionPath, { recursive: true, force: true });
+          }
+          console.log(`✅ Cleaned up temp extraction files: ${download.tempExtractionPath}`);
+        }
+      } catch (error) {
+        console.warn(`⚠️ Failed to clean up temp files: ${error.message}`);
+      }
+    }
+    
+    // Step 4: Update download status to canceled
+    updateDownloadStatus(downloadId, DOWNLOAD_STATUS.ERROR, {
+      error: `Download canceled: ${reason}`,
+      canceledAt: Date.now(),
+      cancelReason: reason
+    });
+    
+    // Step 5: Move to history after brief delay
+    setTimeout(() => {
+      moveDownloadToHistory(downloadId);
+    }, 2000);
+    
+    console.log(`✅ Successfully canceled download: ${gameName}`);
+    
+    return { 
+      success: true, 
+      message: `Download canceled: ${gameName}`,
+      reason: reason
+    };
+    
+  } catch (error) {
+    console.error(`❌ Error canceling download ${downloadId}:`, error);
+    return { 
+      success: false, 
+      error: `Failed to cancel download: ${error.message}` 
+    };
+  }
+}
+
+// Stuck download monitoring system
+let stuckDownloadMonitor = null;
+const stuckDownloadWarnings = new Map(); // Track which downloads have been warned about
+const stuckDownloadTimers = new Map(); // Track when downloads got stuck
+
+function startStuckDownloadMonitoring() {
+  if (stuckDownloadMonitor) {
+    clearInterval(stuckDownloadMonitor);
+  }
+  
+  console.log('🕒 Starting stuck download monitoring...');
+  
+  stuckDownloadMonitor = setInterval(() => {
+    checkForStuckDownloads();
+  }, 5000); // Check every 5 seconds
+}
+
+function stopStuckDownloadMonitoring() {
+  if (stuckDownloadMonitor) {
+    clearInterval(stuckDownloadMonitor);
+    stuckDownloadMonitor = null;
+  }
+  stuckDownloadWarnings.clear();
+  stuckDownloadTimers.clear();
+}
+
+async function checkForStuckDownloads() {
+  try {
+    const downloads = downloadStore.get('downloads', {});
+    const now = Date.now();
+    
+    for (const download of Object.values(downloads)) {
+      // Only check downloads that are in torrent downloading phase
+      if (download.status === DOWNLOAD_STATUS.TORRENT_DOWNLOADING) {
+        const downloadId = download.id;
+        const progress = download.progress || 0;
+        
+        // Check if download is stuck at 0% 
+        if (progress === 0) {
+          // Track when this download first got stuck
+          if (!stuckDownloadTimers.has(downloadId)) {
+            stuckDownloadTimers.set(downloadId, now);
+            console.log(`⏱️ Tracking potentially stuck download: ${download.gameName}`);
+            continue;
+          }
+          
+          const stuckDuration = now - stuckDownloadTimers.get(downloadId);
+          const stuckSeconds = Math.floor(stuckDuration / 1000);
+          
+          // Show warning after 10 seconds
+          if (stuckSeconds >= 10 && !stuckDownloadWarnings.has(downloadId)) {
+            console.log(`⚠️ Download stuck for ${stuckSeconds}s: ${download.gameName}`);
+            stuckDownloadWarnings.set(downloadId, now);
+            await showStuckDownloadWarning(download, stuckSeconds);
+          }
+          
+          // Auto-cancel after 60 seconds (1 minute)
+          if (stuckSeconds >= 60) {
+            console.log(`🚫 Auto-canceling stuck download: ${download.gameName} (stuck for ${stuckSeconds}s)`);
+            await cancelDownload(downloadId, `auto_canceled_stuck_${stuckSeconds}s`);
+            
+            // Clean up tracking
+            stuckDownloadTimers.delete(downloadId);
+            stuckDownloadWarnings.delete(downloadId);
+            
+            // Show auto-cancel notification
+            await showAutoCancelNotification(download, stuckSeconds);
+          }
+        } else {
+          // Download is making progress, remove from stuck tracking
+          if (stuckDownloadTimers.has(downloadId)) {
+            stuckDownloadTimers.delete(downloadId);
+            stuckDownloadWarnings.delete(downloadId);
+            console.log(`✅ Download resumed: ${download.gameName}`);
+          }
+        }
+      } else {
+        // Download is no longer in torrent phase, clean up tracking
+        if (stuckDownloadTimers.has(download.id)) {
+          stuckDownloadTimers.delete(download.id);
+          stuckDownloadWarnings.delete(download.id);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error checking for stuck downloads:', error);
+  }
+}
+
+async function showStuckDownloadWarning(download, stuckSeconds) {
+  try {
+    const { BrowserWindow } = require('electron');
+    let mainWindow = global.mainWindow;
+    
+    if (!mainWindow) {
+      const allWindows = BrowserWindow.getAllWindows();
+      mainWindow = allWindows.find(win => !win.isDestroyed()) || allWindows[0];
+    }
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('download-tracker:stuck-warning', {
+        downloadId: download.id,
+        gameName: download.gameName,
+        stuckSeconds: stuckSeconds,
+        message: `"${download.gameName}" has been stuck at 0% for ${stuckSeconds} seconds. This may indicate the torrent is no longer available on Real-Debrid servers.`,
+        recommendation: 'Consider canceling this download and trying a different torrent.'
+      });
+    }
+  } catch (error) {
+    console.error('Error showing stuck download warning:', error);
+  }
+}
+
+async function showAutoCancelNotification(download, stuckSeconds) {
+  try {
+    const { BrowserWindow } = require('electron');
+    let mainWindow = global.mainWindow;
+    
+    if (!mainWindow) {
+      const allWindows = BrowserWindow.getAllWindows();
+      mainWindow = allWindows.find(win => !win.isDestroyed()) || allWindows[0];
+    }
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('download-tracker:auto-canceled', {
+        downloadId: download.id,
+        gameName: download.gameName,
+        stuckSeconds: stuckSeconds,
+        message: `"${download.gameName}" was automatically canceled after being stuck at 0% for ${stuckSeconds} seconds.`,
+        reason: 'The torrent appears to be unavailable on Real-Debrid servers. You can try downloading a different torrent for this game.'
+      });
+    }
+  } catch (error) {
+    console.error('Error showing auto-cancel notification:', error);
+  }
+}
+
 module.exports = {
   initGameDownloadTracker,
   startTracking,
@@ -594,6 +969,7 @@ module.exports = {
   getTrackedDownloads,
   removeTrackedDownload,
   clearCompletedDownloads,
+  cancelDownload,
   DOWNLOAD_STATUS,
   STATUS_MESSAGES
 }; 

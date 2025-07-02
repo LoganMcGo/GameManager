@@ -333,10 +333,11 @@ class GameLauncherService {
     for (const exe of executables) {
       const fileName = path.basename(exe).toLowerCase();
       
-      // Check for setup/installer executables
+      // Check for setup/installer executables - be more inclusive to catch install.exe
       if (fileName.includes('setup') || 
           fileName.includes('install') || 
           fileName === 'setup.exe' ||
+          fileName === 'install.exe' ||
           fileName === 'installer.exe') {
         setupExecutables.push(exe);
       } else {
@@ -499,7 +500,9 @@ class GameLauncherService {
       let score = 0;
 
       // Prefer executables with game name in filename
-      if (fileName.includes(cleanGameName)) {
+      // Apply same cleaning to filename for consistent comparison
+      const cleanFileName = fileName.replace(/[^a-z0-9]/g, '');
+      if (cleanFileName.includes(cleanGameName)) {
         score += 50;
       }
 
@@ -871,13 +874,13 @@ class GameLauncherService {
     try {
       const { gameId, gameName, repackType, downloadLocation } = installerInfo;
       
-      // Find the setup.exe in the temp extraction folder
+      // Find the installer executable in the temp extraction folder
       const setupPath = await this.findRepackSetupExecutable(gameId, gameName);
       
       if (!setupPath) {
         return {
           success: false,
-          error: 'Setup.exe not found in extracted repack files. The extraction may have failed or the repack format is not supported.'
+          error: 'Installer executable not found in extracted repack files. The extraction may have failed or the repack format is not supported.'
         };
       }
       
@@ -917,7 +920,7 @@ class GameLauncherService {
     }
   }
 
-  // Find setup.exe in the temp extraction folder for a repack
+  // Find installer executable in the temp extraction folder for a repack
   async findRepackSetupExecutable(gameId, gameName) {
     try {
       // Get the download tracker to find the temp extraction path
@@ -964,7 +967,8 @@ class GameLauncherService {
   // Find setup executables in a directory
   async findSetupExecutables(directory) {
     try {
-      const setupExecutables = [];
+      const allExecutables = [];
+      const preferredExecutables = [];
       
       const scanDirectory = (dir, depth = 0) => {
         if (depth > 3) return; // Limit search depth
@@ -978,12 +982,30 @@ class GameLauncherService {
           if (stat.isFile()) {
             const fileName = item.toLowerCase();
             
-            // Look for setup executables
-            if ((fileName.includes('setup') || 
-                 fileName.includes('install') || 
-                 fileName === 'setup.exe' ||
-                 fileName === 'installer.exe') && fileName.endsWith('.exe')) {
-              setupExecutables.push(itemPath);
+            // Look for all .exe files
+            if (fileName.endsWith('.exe')) {
+              // Filter out obvious non-installer files
+              const excludePatterns = [
+                'redist', 'vcredist', 'directx', 'dotnet', '_commonredist',
+                'unins', 'uninst', 'uninstall', 'remove',
+                'crack', 'patch', 'keygen', 'trainer',
+                'updater', 'patcher', 'launcher'
+              ];
+              
+              const isExcluded = excludePatterns.some(pattern => fileName.includes(pattern));
+              
+              if (!isExcluded) {
+                allExecutables.push(itemPath);
+                
+                // Check if this looks like a preferred installer name
+                if (fileName.includes('setup') || 
+                    fileName.includes('install') || 
+                    fileName === 'setup.exe' ||
+                    fileName === 'installer.exe' ||
+                    fileName === 'install.exe') {
+                  preferredExecutables.push(itemPath);
+                }
+              }
             }
           } else if (stat.isDirectory() && depth < 3) {
             // Skip certain directories
@@ -991,7 +1013,9 @@ class GameLauncherService {
             if (!dirName.includes('redist') && 
                 !dirName.includes('_commonredist') && 
                 !dirName.includes('directx') &&
-                !dirName.includes('__macosx')) {
+                !dirName.includes('__macosx') &&
+                !dirName.includes('temp') &&
+                !dirName.includes('cache')) {
               scanDirectory(itemPath, depth + 1);
             }
           }
@@ -999,7 +1023,34 @@ class GameLauncherService {
       };
       
       scanDirectory(directory);
-      return setupExecutables;
+      
+      // Decision logic:
+      // 1. If we have preferred executables (with setup/install in name), use those
+      // 2. If we only have one executable total, use that (common for repacks)
+      // 3. Otherwise return all executables and let the caller decide
+      
+      if (preferredExecutables.length > 0) {
+        console.log(`📦 Found ${preferredExecutables.length} preferred installer(s): ${preferredExecutables.map(p => path.basename(p)).join(', ')}`);
+        return preferredExecutables;
+      } else if (allExecutables.length === 1) {
+        console.log(`📦 Found single executable (likely installer): ${path.basename(allExecutables[0])}`);
+        return allExecutables;
+      } else if (allExecutables.length > 1) {
+        console.log(`📦 Found multiple executables: ${allExecutables.map(p => path.basename(p)).join(', ')}`);
+        // Return all and let user/system decide, but prefer smaller files (installers are usually smaller)
+        return allExecutables.sort((a, b) => {
+          try {
+            const statA = fs.statSync(a);
+            const statB = fs.statSync(b);
+            return statA.size - statB.size;
+          } catch {
+            return 0;
+          }
+        });
+      }
+      
+      console.log(`📦 No suitable installer executables found in: ${directory}`);
+      return [];
       
     } catch (error) {
       console.error('Error scanning for setup executables:', error);

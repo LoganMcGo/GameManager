@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLibrary } from '../context/LibraryContext';
 import { useAuth } from '../context/AuthContext';
+import { useNotifications } from '../context/NotificationContext';
 import AvailableDownloads from './AvailableDownloads';
 
 function Library({ onGameSelect }) {
   const { library, favorites, isLoading, addToLibrary, removeFromLibrary, toggleFavorite, isFavorited } = useLibrary();
   const { isAuthenticated } = useAuth();
+  const notifications = useNotifications();
   const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
   const [sortBy, setSortBy] = useState('name'); // 'name', 'dateAdded', 'lastPlayed'
   const [filterBy, setFilterBy] = useState('all'); // 'all', 'favorites', 'installed', 'notInstalled'
@@ -18,6 +20,49 @@ function Library({ onGameSelect }) {
   const [runningGames, setRunningGames] = useState(new Set());
   const [gameStatuses, setGameStatuses] = useState(new Map());
   const [statusUpdateDebounce, setStatusUpdateDebounce] = useState(new Map());
+  
+  // Library's own persistent state for games that need setup
+  const [libraryGameStates, setLibraryGameStates] = useState(new Map());
+  
+  // Use a ref to access current library states in event handlers to avoid stale closures
+  const libraryGameStatesRef = useRef(libraryGameStates);
+  
+  // Keep ref in sync with state
+  useEffect(() => {
+    libraryGameStatesRef.current = libraryGameStates;
+  }, [libraryGameStates]);
+
+  // Load library game states from localStorage on mount
+  useEffect(() => {
+    const loadLibraryStates = () => {
+      try {
+        const savedStates = localStorage.getItem('libraryGameStates');
+        if (savedStates) {
+          const statesObject = JSON.parse(savedStates);
+          const statesMap = new Map(Object.entries(statesObject));
+          setLibraryGameStates(statesMap);
+          console.log('📚 Loaded library game states:', statesMap);
+        }
+      } catch (error) {
+        console.warn('Failed to load library game states:', error);
+      }
+    };
+
+    loadLibraryStates();
+  }, []);
+
+  // Save library game states to localStorage whenever they change
+  useEffect(() => {
+    if (libraryGameStates.size > 0) {
+      try {
+        const statesObject = Object.fromEntries(libraryGameStates);
+        localStorage.setItem('libraryGameStates', JSON.stringify(statesObject));
+        console.log('💾 Saved library game states to localStorage');
+      } catch (error) {
+        console.warn('Failed to save library game states:', error);
+      }
+    }
+  }, [libraryGameStates]);
   const [isCheckingInstalled, setIsCheckingInstalled] = useState(false);
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
   const [gameToUninstall, setGameToUninstall] = useState(null);
@@ -54,30 +99,50 @@ function Library({ onGameSelect }) {
     const unsubscribeDownloads = window.api.downloadTracker.onDownloadUpdate((download) => {
       setActiveDownloads(prevDownloads => {
         const updated = new Map(prevDownloads);
-        updated.set(download.gameId, download);
+        
+        // Only update active downloads if library doesn't own this game's state
+        const libraryOwnsState = libraryGameStatesRef.current.has(download.gameId);
+        
+        if (!libraryOwnsState) {
+          updated.set(download.gameId, download);
+        } else {
+          console.log(`📚 Library owns ${download.gameName}, not updating active downloads`);
+        }
+        
         return updated;
       });
       
-      // Check if we should update status
-      const existingStatus = gameStatuses.get(download.gameId);
+      // Check if download is complete and needs setup - transfer ownership to library
+      if (download.status === 'complete' && (download.needsManualSetup || download.isRepack)) {
+        transferGameToLibraryOwnership(download);
+        return; // Library owns this game now, don't update gameStatuses
+      }
       
-      // Preserve installed/ready status if game is complete and has executable
-      const shouldPreserveInstalled = existingStatus && 
-        existingStatus.status === 'complete' && 
-        existingStatus.executablePath && 
-        download.status === 'complete';
-      
-      if (!shouldPreserveInstalled) {
-        const newStatus = {
-          status: download.status,
-          progress: download.progress || 0,
-          gameDirectory: download.gameDirectory,
-          executablePath: download.executablePath,
-          needsManualSetup: download.needsManualSetup,
-          availableExecutables: download.availableExecutables
-        };
+      // Only update gameStatuses if library doesn't own this game's state
+      const libraryOwnsState = libraryGameStatesRef.current.has(download.gameId);
+      if (!libraryOwnsState) {
+        const existingStatus = gameStatuses.get(download.gameId);
         
-        updateGameStatusDebounced(download.gameId, newStatus, 'realTimeListener');
+        // Preserve installed/ready status if game is complete and has executable
+        const shouldPreserveInstalled = existingStatus && 
+          existingStatus.status === 'complete' && 
+          existingStatus.executablePath && 
+          download.status === 'complete';
+        
+        if (!shouldPreserveInstalled) {
+          const newStatus = {
+            status: download.status,
+            progress: download.progress || 0,
+            gameDirectory: download.gameDirectory,
+            executablePath: download.executablePath,
+            needsManualSetup: download.needsManualSetup,
+            availableExecutables: download.availableExecutables
+          };
+          
+          updateGameStatusDebounced(download.gameId, newStatus, 'realTimeListener');
+        }
+      } else {
+        console.log(`📚 Library owns ${download.gameName}, not updating game status`);
       }
       
       // Immediate installation check when download completes
@@ -97,11 +162,79 @@ function Library({ onGameSelect }) {
       setTimeout(() => checkRunningGames(), 100);
     });
 
+    // Listen for downloads moved to history
+    const unsubscribeHistoryUpdates = window.api.downloadTracker.onHistoryUpdate && window.api.downloadTracker.onHistoryUpdate(() => {
+      console.log('📚 Download history updated - library maintaining setup states');
+      // Don't need to do anything special here since library owns the setup states
+      // Just log that we're aware of the history change
+    });
+
+    // Listen for downloads moved to history (specific download)
+    const unsubscribeMovedToHistory = window.api.downloadTracker.onMovedToHistory && window.api.downloadTracker.onMovedToHistory((download) => {
+      console.log(`📚 Download moved to history: ${download.gameName}`);
+      
+      // If library owns this game's setup state, maintain it
+      const libraryOwnsState = libraryGameStatesRef.current.has(download.gameId);
+      if (libraryOwnsState) {
+        console.log(`📚 Library maintaining setup state for ${download.gameName} despite move to history`);
+        // Remove from active downloads but keep library state
+        setActiveDownloads(prev => {
+          const updated = new Map(prev);
+          updated.delete(download.gameId);
+          return updated;
+        });
+      }
+    });
+
+    // Listen for inter-component communication events
+    const handleGameNeedsSetup = (event) => {
+      const { gameId, gameName, setupData } = event.detail;
+      console.log(`📨 Received setup request for: ${gameName}`, setupData);
+      
+      // Take ownership of this game's setup state
+      setLibraryGameStates(prev => {
+        const updated = new Map(prev);
+        updated.set(gameId, {
+          status: 'needs_setup',
+          timestamp: Date.now(),
+          setupData: setupData,
+          source: 'external_notification'
+        });
+        return updated;
+      });
+    };
+
+    const handleGameInstalled = (event) => {
+      const { gameId, installData } = event.detail;
+      console.log(`📨 Game installed notification for: ${gameId}`, installData);
+      
+      // Only release from library ownership if the install data indicates a successful installation
+      // with an executable path
+      if (installData && installData.executablePath) {
+        console.log(`✅ Releasing ownership - game has executable: ${installData.executablePath}`);
+        releaseGameFromLibraryOwnership(gameId, 'external_install_notification', false);
+        
+        // Trigger installation check
+        setTimeout(() => checkInstalledGames(), 500);
+      } else {
+        console.log(`⚠️ Not releasing ownership - no executable path in install data`);
+        // Keep the setup state since the game might not be properly installed
+      }
+    };
+
+    // Add event listeners for inter-component communication
+    window.addEventListener('game-needs-setup', handleGameNeedsSetup);
+    window.addEventListener('game-installed', handleGameInstalled);
+
     return () => {
       unsubscribeDownloads();
       unsubscribeGameClosed();
+      unsubscribeHistoryUpdates && unsubscribeHistoryUpdates();
+      unsubscribeMovedToHistory && unsubscribeMovedToHistory();
+      window.removeEventListener('game-needs-setup', handleGameNeedsSetup);
+      window.removeEventListener('game-installed', handleGameInstalled);
     };
-  }, []);
+  }, []); // Removed libraryGameStates dependency to prevent stale closures
 
   // Setup periodic checks with improved intervals + force refresh capability
   useEffect(() => {
@@ -195,6 +328,16 @@ function Library({ onGameSelect }) {
         const newInstalledGames = new Set();
         
         for (const game of library) {
+          // Check if library owns this game's state (e.g., needs setup)
+          const libraryOwnsState = libraryGameStatesRef.current.has(game.appId);
+          const libraryState = libraryGameStatesRef.current.get(game.appId);
+          
+          // Skip games that library owns for setup - don't override their state
+          if (libraryOwnsState && libraryState?.status === 'needs_setup') {
+            console.log(`⏭️ Skipping installation check for ${game.name} - library owns setup state`);
+            continue;
+          }
+          
           // First try to use tracked game directory if available
           const trackedStatus = gameStatuses.get(game.appId);
           
@@ -268,10 +411,12 @@ function Library({ onGameSelect }) {
           // Match downloads to library games by name similarity
           downloads.forEach(download => {
             library.forEach(game => {
-              if (download.filename && 
-                  (download.filename.toLowerCase().includes(game.name.toLowerCase()) ||
-                   game.name.toLowerCase().includes(download.filename.toLowerCase().split('.')[0]))) {
-                gameDownloads.add(game.appId);
+              if (download.filename) {
+                // Use precise matching for filenames too
+                const filenameWithoutExt = download.filename.toLowerCase().split('.')[0];
+                if (isGameNameMatch(filenameWithoutExt, game.name)) {
+                  gameDownloads.add(game.appId);
+                }
               }
             });
           });
@@ -284,7 +429,7 @@ function Library({ onGameSelect }) {
     }
   };
 
-  // Check active downloads from the new download tracker
+  // Check active downloads from the new download tracker (simplified since library manages its own state)
   const checkActiveDownloads = async () => {
     try {
       if (window.api?.downloadTracker?.getDownloads) {
@@ -292,32 +437,37 @@ function Library({ onGameSelect }) {
         const activeMap = new Map();
         
         trackedDownloads.forEach(download => {
-          // Match download to library game by game ID or name
+          // Match download to library game by game ID or name (with precise matching)
           library.forEach(game => {
             if ((download.gameId && download.gameId === game.appId) ||
-                (download.gameName && 
-                 (download.gameName.toLowerCase().includes(game.name.toLowerCase()) ||
-                  game.name.toLowerCase().includes(download.gameName.toLowerCase())))) {
+                (download.gameName && isGameNameMatch(download.gameName, game.name))) {
               
-              activeMap.set(game.appId, download);
+              // Check if library owns this game's state
+              const libraryOwnsState = libraryGameStatesRef.current.has(game.appId);
               
-              // Only update status if it's not already properly completed
-              const existingStatus = gameStatuses.get(game.appId);
-              const shouldUpdateStatus = !existingStatus || 
-                existingStatus.status !== 'complete' || 
-                !existingStatus.executablePath || 
-                download.status !== 'complete';
-              
-              if (shouldUpdateStatus) {
-                const newStatus = {
-                  status: download.status,
-                  progress: download.progress || 0,
-                  gameDirectory: download.gameDirectory,
-                  executablePath: download.executablePath,
-                  needsManualSetup: download.needsManualSetup,
-                  availableExecutables: download.availableExecutables
-                };
-                updateGameStatusDebounced(game.appId, newStatus, 'downloadTracker');
+              if (!libraryOwnsState) {
+                activeMap.set(game.appId, download);
+                
+                const existingStatus = gameStatuses.get(game.appId);
+                
+                // Only update if this represents a change or new information
+                const shouldUpdateStatus = !existingStatus || 
+                  existingStatus.status !== download.status ||
+                  (!existingStatus.executablePath && download.executablePath);
+                
+                if (shouldUpdateStatus) {
+                  const newStatus = {
+                    status: download.status,
+                    progress: download.progress || 0,
+                    gameDirectory: download.gameDirectory,
+                    executablePath: download.executablePath,
+                    needsManualSetup: download.needsManualSetup,
+                    availableExecutables: download.availableExecutables
+                  };
+                  updateGameStatusDebounced(game.appId, newStatus, 'downloadTracker');
+                }
+              } else {
+                console.log(`📚 Library owns ${game.name}, skipping active download update`);
               }
             }
           });
@@ -351,6 +501,197 @@ function Library({ onGameSelect }) {
       return updated;
     });
   };
+
+  // Transfer game ownership to library when download completes and needs setup
+  const transferGameToLibraryOwnership = (download) => {
+    const gameId = download.gameId;
+    const gameName = download.gameName;
+    
+    console.log(`📚 Library taking ownership of setup for: ${gameName}`, {
+      gameId,
+      tempExtractionPath: download.tempExtractionPath,
+      isRepack: download.isRepack,
+      repackType: download.repackType,
+      needsManualSetup: download.needsManualSetup
+    });
+    
+    // Ensure we have valid setup data
+    const setupData = {
+      gameDirectory: download.gameDirectory,
+      tempExtractionPath: download.tempExtractionPath,
+      isRepack: download.isRepack || false,
+      repackType: download.repackType || 'Game Repack',
+      needsManualSetup: download.needsManualSetup || false,
+      availableExecutables: download.availableExecutables || [],
+      executablePath: download.executablePath
+    };
+    
+    // Log the setup data to ensure tempExtractionPath is included
+    console.log(`📚 Setup data for ${gameName}:`, setupData);
+    
+    setLibraryGameStates(prev => {
+      const updated = new Map(prev);
+      updated.set(gameId, {
+        status: 'needs_setup',
+        timestamp: Date.now(),
+        setupData: setupData,
+        source: 'download_completion'
+      });
+      
+      console.log(`📚 Library state updated for ${gameName}:`, updated.get(gameId));
+      return updated;
+    });
+    
+    // Remove from regular gameStatuses since library owns it now
+    setGameStatuses(prev => {
+      const updated = new Map(prev);
+      updated.delete(gameId);
+      return updated;
+    });
+  };
+
+  // Remove game from library ownership (when installed or no longer needs setup)
+  const releaseGameFromLibraryOwnership = (gameId, reason = 'unknown', requiresExecutable = true) => {
+    console.log(`📤 Library considering releasing ownership of game: ${gameId} (reason: ${reason})`);
+    
+    // If we require an executable and this is an install notification, verify the game actually has one
+    if (requiresExecutable && reason.includes('install')) {
+      const trackedStatus = gameStatuses.get(gameId);
+      const installedGameExists = installedGames.has(gameId);
+      
+      // Only release if the game is actually detected as installed with an executable
+      if (!installedGameExists || !trackedStatus?.executablePath) {
+        console.log(`⚠️ Not releasing ownership - game not properly installed yet`);
+        return;
+      }
+    }
+    
+    console.log(`📤 Library releasing ownership of game: ${gameId} (reason: ${reason})`);
+    
+    setLibraryGameStates(prev => {
+      const updated = new Map(prev);
+      updated.delete(gameId);
+      return updated;
+    });
+  };
+
+  // Notify other components about game state changes
+  const notifyGameStateChange = (gameId, gameName, newState, data = {}) => {
+    const event = new CustomEvent(`game-state-change`, {
+      detail: { gameId, gameName, newState, data, timestamp: Date.now() }
+    });
+    window.dispatchEvent(event);
+    console.log(`📨 Notified game state change: ${gameName} -> ${newState}`);
+  };
+
+  // Precise game name matching to avoid "Portal" matching "Portal 2"
+  const isGameNameMatch = (downloadName, gameName) => {
+    if (!downloadName || !gameName) return false;
+    
+    const cleanDownloadName = downloadName.toLowerCase().trim();
+    const cleanGameName = gameName.toLowerCase().trim();
+    
+    // Exact match first
+    if (cleanDownloadName === cleanGameName) {
+      return true;
+    }
+    
+    // Clean both names by removing common variations
+    const cleanForComparison = (name) => {
+      return name
+        .replace(/[:\-–—]/g, ' ')  // Replace colons and dashes with spaces
+        .replace(/\s+/g, ' ')       // Normalize spaces
+        .trim();
+    };
+    
+    const normalizedDownload = cleanForComparison(cleanDownloadName);
+    const normalizedGame = cleanForComparison(cleanGameName);
+    
+    // Check if either name exactly matches the other after normalization
+    if (normalizedDownload === normalizedGame) {
+      return true;
+    }
+    
+    // For substring matching, be very strict to avoid false positives
+    // Only match if one name is a subset of the other AND the difference is small
+    const minLength = Math.min(normalizedDownload.length, normalizedGame.length);
+    const maxLength = Math.max(normalizedDownload.length, normalizedGame.length);
+    
+    // If the length difference is too large, it's likely a different game
+    if (maxLength - minLength > 10) {
+      return false;
+    }
+    
+    // Check for exact word boundaries to avoid "Portal" matching "Portal 2"
+    const downloadWords = normalizedDownload.split(' ').filter(w => w.length > 0);
+    const gameWords = normalizedGame.split(' ').filter(w => w.length > 0);
+    
+    // Must have significant word overlap
+    const commonWords = downloadWords.filter(word => 
+      gameWords.some(gameWord => gameWord === word)
+    );
+    
+    // Require at least 80% of the shorter name's words to match
+    const minWords = Math.min(downloadWords.length, gameWords.length);
+    const matchRatio = commonWords.length / minWords;
+    
+    if (matchRatio >= 0.8) {
+      // Additional check: make sure we're not matching sequels
+      const hasSequelIndicators = (words) => {
+        return words.some(word => 
+          /^(2|3|4|5|ii|iii|iv|v|two|three|four|five)$/i.test(word) ||
+          /^(sequel|part|chapter|episode)$/i.test(word)
+        );
+      };
+      
+      const downloadHasSequel = hasSequelIndicators(downloadWords);
+      const gameHasSequel = hasSequelIndicators(gameWords);
+      
+      // If one has sequel indicators and the other doesn't, don't match
+      if (downloadHasSequel !== gameHasSequel) {
+        return false;
+      }
+      
+      return true;
+    }
+    
+    return false;
+  };
+
+  // Expose library state management functions globally for inter-component communication
+  useEffect(() => {
+    // Make functions available to other components
+    window.libraryStateManager = {
+      takeOwnership: (gameId, gameName, setupData) => {
+        console.log(`📚 External request to take ownership of: ${gameName}`);
+        setLibraryGameStates(prev => {
+          const updated = new Map(prev);
+          updated.set(gameId, {
+            status: 'needs_setup',
+            timestamp: Date.now(),
+            setupData: setupData,
+            source: 'external_api'
+          });
+          return updated;
+        });
+      },
+      releaseOwnership: (gameId, reason = 'external_release') => {
+        releaseGameFromLibraryOwnership(gameId, reason);
+      },
+      getLibraryState: (gameId) => {
+        return libraryGameStates.get(gameId);
+      },
+      getAllLibraryStates: () => {
+        return Array.from(libraryGameStates.entries());
+      }
+    };
+
+    return () => {
+      if (window.libraryStateManager) {
+        delete window.libraryStateManager;
+      }
+    };
+  }, [libraryGameStates]);
 
   // Filter and sort games
   const filteredGames = library
@@ -471,81 +812,130 @@ function Library({ onGameSelect }) {
         break;
         
       case 'needs_setup':
-        // Handle repack installation or manual executable selection
+        // Handle repack installation or manual executable selection using library state
         try {
-          // First, let's refresh our download tracker data to make sure we have the latest info
-          await checkActiveDownloads();
+          // Get the library's own state for this game
+          const libraryState = libraryGameStates.get(game.appId);
+          let setupData = libraryState?.setupData || {};
           
-          // Get fresh tracked status after refresh
-          const freshTrackedStatus = gameStatuses.get(game.appId);
-          console.log('🔄 Fresh tracked status after refresh:', freshTrackedStatus);
+          console.log('🔧 Setting up game using library state:', game.name, setupData);
           
-          // First, let's check if there are any repack downloads for this game in the download tracker
-          const allDownloads = await window.api.downloadTracker.getDownloads();
-          const gameDownloads = allDownloads.filter(d => 
-            (d.gameName === game.name || d.gameId === game.appId) && 
-            d.isRepack && 
-            d.status === 'complete'
-          );
-          console.log('📋 Repack downloads for this game:', gameDownloads);
-          
-          // Check if this is a repack that needs installation (either from tracked status OR download tracker)
-          const repackDownload = gameDownloads.length > 0 ? gameDownloads[0] : null;
-          const hasRepackInfo = (freshTrackedStatus?.isRepack && freshTrackedStatus?.tempExtractionPath) || repackDownload;
-          
-          if (hasRepackInfo) {
-            console.log('🔄 Handling repack installation for:', game.name);
+          // If we don't have temp extraction path, try to get it from download tracker history
+          if (setupData.isRepack && !setupData.tempExtractionPath) {
+            console.log('⚠️ Missing temp extraction path, checking download tracker history...');
             
-            // Use temp extraction path from either tracked status or download tracker
-            const tempExtractionPath = freshTrackedStatus?.tempExtractionPath || repackDownload?.tempExtractionPath;
-            const repackType = freshTrackedStatus?.repackType || repackDownload?.repackType || 'Game Repack';
-            
-            console.log('📁 Temp extraction path:', tempExtractionPath);
-            console.log('📦 Repack type:', repackType);
-            console.log('📊 Source:', freshTrackedStatus?.tempExtractionPath ? 'tracked status' : 'download tracker');
-            
-            if (!tempExtractionPath) {
-              console.error('❌ No temp extraction path found for repack');
-              // Fall through to regular setup
-            } else {
-              // This is a repack - handle installation flow
-              const repackInfo = {
-                repackType: repackType,
-                installer: tempExtractionPath,
-                installInstructions: [
-                  'This is a repack that needs to be installed before playing.',
-                  'Follow the installation wizard to complete setup.',
-                  'Install to the download directory for automatic detection.'
-                ]
-              };
+            try {
+              const [activeDownloads, downloadHistory] = await Promise.all([
+                window.api.downloadTracker.getDownloads(),
+                window.api.downloadTracker.getHistory()
+              ]);
               
-              await handleRepackInstallation(game, {
-                gameId: game.appId,
-                gameName: game.name,
-                gameDirectory: tempExtractionPath
-              }, repackInfo);
-              return; // Exit early to avoid regular setup
+              // Check both active and history for this game
+              const allDownloads = [...activeDownloads, ...downloadHistory];
+              const gameDownload = allDownloads.find(d => {
+                // Use precise matching to avoid Portal matching Portal 2
+                const downloadNameMatch = d.gameName && isGameNameMatch(d.gameName, game.name);
+                const idMatch = d.gameId === game.appId;
+                return (idMatch || downloadNameMatch) && d.isRepack && d.tempExtractionPath;
+              });
+              
+              if (gameDownload?.tempExtractionPath) {
+                console.log('✅ Found temp extraction path in download tracker:', gameDownload.tempExtractionPath);
+                setupData = {
+                  ...setupData,
+                  tempExtractionPath: gameDownload.tempExtractionPath,
+                  repackType: gameDownload.repackType || setupData.repackType
+                };
+                
+                // Update library state with the found path
+                setLibraryGameStates(prev => {
+                  const updated = new Map(prev);
+                  const currentState = updated.get(game.appId);
+                  if (currentState) {
+                    updated.set(game.appId, {
+                      ...currentState,
+                      setupData: setupData
+                    });
+                  }
+                  return updated;
+                });
+              } else {
+                console.warn(`❌ Could not find temp extraction path for ${game.name} in download history`);
+                
+                // As a fallback, try to locate any extracted repack files in the download directory
+                const downloadLocation = await window.api.download.getDownloadLocation();
+                const possibleTempPath = `${downloadLocation}\\${game.name.replace(/[<>:"/\\|?*]/g, '_')}`;
+                
+                console.log(`🔍 Checking for extracted files at: ${possibleTempPath}`);
+                
+                // Check if this directory exists and contains setup files
+                try {
+                  const directoryExists = await window.api.launcher.checkDirectoryExists(possibleTempPath);
+                  if (directoryExists) {
+                    // Try to find setup executables in this directory
+                    const executables = await window.api.launcher.scanDirectory(possibleTempPath);
+                    const hasSetupFiles = executables.some(exe => {
+                      const fileName = exe.toLowerCase();
+                      return fileName.includes('setup') || fileName.includes('install');
+                    });
+                    
+                    if (hasSetupFiles) {
+                      console.log('✅ Found possible repack files at fallback location');
+                      setupData = {
+                        ...setupData,
+                        tempExtractionPath: possibleTempPath
+                      };
+                      
+                      // Update library state with the found path
+                      setLibraryGameStates(prev => {
+                        const updated = new Map(prev);
+                        const currentState = updated.get(game.appId);
+                        if (currentState) {
+                          updated.set(game.appId, {
+                            ...currentState,
+                            setupData: setupData
+                          });
+                        }
+                        return updated;
+                      });
+                    }
+                  }
+                } catch (error) {
+                  console.warn('Failed to check fallback directory:', error);
+                }
+              }
+            } catch (error) {
+              console.warn('Failed to check download tracker for temp extraction path:', error);
             }
           }
           
-          if (freshTrackedStatus?.isRepack) {
-  
-            console.log('Fresh tracked status:', freshTrackedStatus);
+          if (setupData.isRepack && setupData.tempExtractionPath) {
+            console.log('🔄 Handling repack installation for:', game.name);
             
-            // Let's check if there are any downloads for this game
-            const allDownloads = await window.api.downloadTracker.getDownloads();
-            const gameDownloads = allDownloads.filter(d => d.gameName === game.name || d.gameId === game.appId);
-            console.log('📋 Downloads for this repack game:', gameDownloads);
+            // This is a repack - handle installation flow
+            const repackInfo = {
+              repackType: setupData.repackType || 'Game Repack',
+              installer: setupData.tempExtractionPath,
+              installInstructions: [
+                'This is a repack that needs to be installed before playing.',
+                'Follow the installation wizard to complete setup.',
+                'Install to the download directory for automatic detection.'
+              ]
+            };
+            
+            await handleRepackInstallation(game, {
+              gameId: game.appId,
+              gameName: game.name,
+              gameDirectory: setupData.tempExtractionPath
+            }, repackInfo);
           } else {
             console.log('🔧 Handling as regular game setup');
-            console.log('   freshTrackedStatus.isRepack:', freshTrackedStatus?.isRepack);
-            console.log('   freshTrackedStatus.tempExtractionPath:', freshTrackedStatus?.tempExtractionPath);
             
             // Regular game setup - look for executable in download directory  
             const gameInfo = {
               gameId: game.appId,
               gameName: game.name,
-              gameDirectory: freshTrackedStatus?.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name}`
+              gameDirectory: setupData.gameDirectory || `${await window.api.download.getDownloadLocation()}/${game.name.replace(/[<>:"/\\|?*]/g, '_')}`
             };
             await handleExecutableSelection(game, gameInfo);
           }
@@ -656,13 +1046,57 @@ function Library({ onGameSelect }) {
     const isDownloaded = downloadedGames.has(game.appId);
     const activeDownload = activeDownloads.get(game.appId);
     const gameStatus = gameStatuses.get(game.appId);
+    const libraryState = libraryGameStatesRef.current.get(game.appId); // Use ref for latest state
+    
+    // Debug logging for Portal specifically
+    if (game.name === 'Portal') {
+      console.log(`🎮 Portal status check:`, {
+        isRunning,
+        isInstalled,
+        isDownloaded,
+        hasActiveDownload: !!activeDownload,
+        hasGameStatus: !!gameStatus,
+        hasLibraryState: !!libraryState,
+        libraryStatus: libraryState?.status,
+        setupData: libraryState?.setupData,
+        libraryMapSize: libraryGameStatesRef.current.size
+      });
+    }
     
     // Priority 1: Currently running games
     if (isRunning) {
       return { status: 'running', text: '🎮 Running', color: 'text-green-400', action: 'Stop Game' };
     }
     
-    // Priority 2: Games with tracked status (from download tracker)
+    // Priority 2: Library-owned states (highest priority for setup states)
+    if (libraryState) {
+      console.log(`📚 Using library state for ${game.name}:`, libraryState);
+      switch (libraryState.status) {
+        case 'needs_setup':
+          const setupData = libraryState.setupData || {};
+          if (setupData.isRepack) {
+            return { 
+              status: 'needs_setup', 
+              text: '⚙️ Needs Setup (Repack)', 
+              color: 'text-purple-400', 
+              action: 'Setup Repack'
+            };
+          } else {
+            return { 
+              status: 'needs_setup', 
+              text: '⚙️ Needs Setup', 
+              color: 'text-purple-400', 
+              action: 'Setup Game'
+            };
+          }
+        default:
+          // Unknown library state, continue to other checks
+          console.log(`⚠️ Unknown library state for ${game.name}:`, libraryState.status);
+          break;
+      }
+    }
+    
+    // Priority 3: Games with tracked status (from download tracker)
     if (gameStatus) {
       switch (gameStatus.status) {
         case 'downloading':
@@ -749,12 +1183,12 @@ function Library({ onGameSelect }) {
       }
     }
     
-    // Priority 3: Check if game is installed (detected by launcher)
+    // Priority 4: Check if game is installed (detected by launcher)
     if (isInstalled) {
       return { status: 'installed', text: '● Installed', color: 'text-green-400', action: 'Play' };
     }
     
-    // Priority 4: Active download in progress (legacy or without tracked status)
+    // Priority 5: Active download in progress (legacy or without tracked status)
     if (activeDownload) {
       return { 
         status: 'downloading', 
@@ -764,12 +1198,12 @@ function Library({ onGameSelect }) {
       };
     }
     
-    // Priority 5: Downloaded to Real-Debrid but not locally installed
+    // Priority 6: Downloaded to Real-Debrid but not locally installed
     if (isDownloaded) {
       return { status: 'downloaded', text: '✓ Downloaded', color: 'text-yellow-400', action: 'Open Folder' };
     }
     
-    // Priority 6: Not downloaded at all
+    // Priority 7: Not downloaded at all
     return { status: 'not_downloaded', text: '○ Not Downloaded', color: 'text-gray-400', action: 'Find Downloads' };
   };
 
@@ -965,26 +1399,32 @@ function Library({ onGameSelect }) {
               executablePath: executableResult.executablePath
             });
             
-            // Clean up temp files for this repack
-            await cleanupRepackTempFiles(game.appId, game.name);
+            // Update local state immediately to ensure we recognize the game as installed
+            setInstalledGames(prev => new Set(prev).add(game.appId));
             
-            // Update the game status
+            // Update game status to reflect successful installation
             setGameStatuses(prev => {
-              const newMap = new Map(prev);
-              newMap.set(game.appId, {
+              const updated = new Map(prev);
+              updated.set(game.appId, {
                 status: 'complete',
                 gameDirectory: gameFolderPath,
                 executablePath: executableResult.executablePath,
                 needsManualSetup: false
               });
-              return newMap;
+              return updated;
             });
             
-            // Add to installed games
-            setInstalledGames(prev => new Set(prev).add(game.appId));
+            // Clean up temp files for this repack
+            await cleanupRepackTempFiles(game.appId, game.name);
             
-            // Refresh the library to show the installed game
-            await loadLibrary();
+            // Release from library ownership now that the game is properly installed
+            releaseGameFromLibraryOwnership(game.appId, 'successful_installation', false);
+            
+            // Notify other components about successful installation
+            notifyGameStateChange(game.appId, game.name, 'installed', {
+              gameDirectory: gameFolderPath,
+              executablePath: executableResult.executablePath
+            });
             
             // Show success notification
             notifications.showNotification({
@@ -996,20 +1436,13 @@ function Library({ onGameSelect }) {
             });
           } else {
             console.warn('Installation folder found but no executable detected');
-            // Still mark as success but user may need to manually set executable
-            await window.api.launcher.addInstalledGame({
-              gameId: game.appId,
-              gameName: game.name,
-              installPath: gameFolderPath,
-              executablePath: null
-            });
-            
-            await loadLibrary();
+            // DON'T release ownership if we can't find an executable
+            // Keep the setup state so user can try again or manually select executable
             
             notifications.showNotification({
               id: 'repack-install-partial',
-              title: 'Installation Detected',
-              message: `${game.name} installation folder found. You may need to manually select the game executable in settings.`,
+              title: 'Installation Incomplete',
+              message: `${game.name} installation folder found but no executable detected. The game still needs setup.`,
               type: 'warning',
               duration: 8000
             });
@@ -1117,15 +1550,25 @@ function Library({ onGameSelect }) {
         {/* Game Detail Content */}
         <div className="flex-1 overflow-y-auto min-h-0">
           {/* Hero Section */}
-          <div className="relative h-96 bg-gradient-to-r from-gray-800 to-gray-700">
-            {gameData.imageUrl && (
-              <img 
-                src={gameData.imageUrl} 
-                alt={gameData.name} 
-                className="w-full h-full object-cover opacity-30"
-              />
+          <div className="relative h-96 bg-gradient-to-r from-gray-800 to-gray-700 overflow-hidden">
+            {(gameData.heroImageUrl || gameData.imageUrl) && (
+              <>
+                {/* Blurred background layer */}
+                <img
+                  src={gameData.heroImageUrl || gameData.imageUrl}
+                  alt=""
+                  className="absolute inset-0 w-full h-full object-cover scale-110 blur-md transition-transform duration-700"
+                  style={{ filter: 'blur(8px) brightness(0.4)' }}
+                />
+                {/* Sharp foreground image using object-contain to show whole image */}
+                <img
+                  src={gameData.heroImageUrl || gameData.imageUrl}
+                  alt={gameData.name}
+                  className="relative z-10 w-full h-full object-contain transition-transform duration-700"
+                />
+              </>
             )}
-            <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent">
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent z-20">
               <div className="absolute bottom-6 left-6 right-6">
                 <div className="flex items-end justify-between">
                   <div>

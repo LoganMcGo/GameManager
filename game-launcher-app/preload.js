@@ -107,12 +107,40 @@ contextBridge.exposeInMainWorld(
       clearCompleted: () => ipcRenderer.invoke('download-tracker:clear-completed'),
       startTracking: (trackingData) => ipcRenderer.invoke('download-tracker:start-tracking', trackingData),
       updateStatus: (downloadId, status, data) => ipcRenderer.invoke('download-tracker:update-status', downloadId, status, data),
+      cancelDownload: (downloadId, reason) => ipcRenderer.invoke('download-tracker:cancel-download', downloadId, reason),
       getStatistics: () => ipcRenderer.invoke('download-tracker:get-statistics'),
       updateConfig: (config) => ipcRenderer.invoke('download-tracker:update-config', config),
+      
+      // History API
+      getHistory: () => ipcRenderer.invoke('download-tracker:get-history'),
+      clearHistory: () => ipcRenderer.invoke('download-tracker:clear-history'),
+      removeHistoryItem: (downloadId) => ipcRenderer.invoke('download-tracker:remove-history-item', downloadId),
+      moveToHistory: (downloadId) => ipcRenderer.invoke('download-tracker:move-to-history', downloadId),
+      
       onDownloadUpdate: (callback) => {
         const wrappedCallback = (event, ...args) => callback(...args);
         ipcRenderer.on('download-tracker:update', wrappedCallback);
         return () => ipcRenderer.removeListener('download-tracker:update', wrappedCallback);
+      },
+      onHistoryUpdate: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download-tracker:history-update', wrappedCallback);
+        return () => ipcRenderer.removeListener('download-tracker:history-update', wrappedCallback);
+      },
+      onMovedToHistory: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download-tracker:moved-to-history', wrappedCallback);
+        return () => ipcRenderer.removeListener('download-tracker:moved-to-history', wrappedCallback);
+      },
+      onStuckWarning: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download-tracker:stuck-warning', wrappedCallback);
+        return () => ipcRenderer.removeListener('download-tracker:stuck-warning', wrappedCallback);
+      },
+      onAutoCanceled: (callback) => {
+        const wrappedCallback = (event, ...args) => callback(...args);
+        ipcRenderer.on('download-tracker:auto-canceled', wrappedCallback);
+        return () => ipcRenderer.removeListener('download-tracker:auto-canceled', wrappedCallback);
       }
     },
     
